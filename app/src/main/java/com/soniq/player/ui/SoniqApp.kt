@@ -8,10 +8,7 @@ package com.soniq.player.ui
 import android.content.ComponentName
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.graphics.RenderEffect
-import android.graphics.Shader
 import android.net.Uri
-import android.os.Build
 import android.view.HapticFeedbackConstants
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
@@ -37,7 +34,6 @@ import androidx.compose.ui.draw.*
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
-import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -283,47 +279,42 @@ fun SoniqApp() {
                 }
             }
 
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .liquidGlassBlur(radius = 20f)
-            ) {
-                OutlinedTextField(
-                    value = query,
-                    onValueChange = {
-                        query = it
-                        if (it.length >= 2) {
-                            searchHistory = (listOf(it) + searchHistory.filterNot { old -> old == it }).take(8)
-                            prefs.edit().putStringSet("search_history", searchHistory.toSet()).apply()
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    placeholder = {
-                        Text(
-                            "Search songs, artists, albums, folders...",
-                            color = MutedLavender.copy(alpha = 0.6f),
-                            fontSize = 13.sp
-                        )
-                    },
-                    leadingIcon = { Icon(Icons.Default.Search, null, tint = dynamicSecondaryColor) },
-                    trailingIcon = {
-                        if (query.isNotEmpty()) {
-                            IconButton(onClick = { query = "" }) { Icon(Icons.Default.Close, "Clear", tint = MutedLavender) }
-                        }
-                    },
-                    singleLine = true,
-                    shape = RoundedCornerShape(26.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = dynamicSecondaryColor,
-                        unfocusedBorderColor = GlassBorder,
-                        focusedTextColor = Color.White,
-                        unfocusedTextColor = Color.White,
-                        cursorColor = dynamicSecondaryColor,
-                        focusedContainerColor = GlassPill,
-                        unfocusedContainerColor = GlassPill
+            // Clean Frosted Glass Search Bar without content-blurring artifacts
+            OutlinedTextField(
+                value = query,
+                onValueChange = {
+                    query = it
+                    if (it.length >= 2) {
+                        searchHistory = (listOf(it) + searchHistory.filterNot { old -> old == it }).take(8)
+                        prefs.edit().putStringSet("search_history", searchHistory.toSet()).apply()
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = {
+                    Text(
+                        "Search songs, artists, albums, folders...",
+                        color = MutedLavender.copy(alpha = 0.6f),
+                        fontSize = 13.sp
                     )
+                },
+                leadingIcon = { Icon(Icons.Default.Search, null, tint = dynamicSecondaryColor) },
+                trailingIcon = {
+                    if (query.isNotEmpty()) {
+                        IconButton(onClick = { query = "" }) { Icon(Icons.Default.Close, "Clear", tint = MutedLavender) }
+                    }
+                },
+                singleLine = true,
+                shape = RoundedCornerShape(26.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = dynamicSecondaryColor,
+                    unfocusedBorderColor = GlassBorder,
+                    focusedTextColor = Color.White,
+                    unfocusedTextColor = Color.White,
+                    cursorColor = dynamicSecondaryColor,
+                    focusedContainerColor = Color(0x6618102C),
+                    unfocusedContainerColor = Color(0x44140D26)
                 )
-            }
+            )
 
             Spacer(Modifier.height(10.dp))
 
@@ -403,12 +394,12 @@ fun SoniqApp() {
             }
         }
 
+        // Bottom Navigation Bar
         Box(
             Modifier
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
                 .padding(horizontal = 18.dp, vertical = 12.dp)
-                .liquidGlassBlur(radius = 35f)
         ) {
             FloatingBottomNavBar(
                 currentTab = currentTab,
@@ -417,6 +408,7 @@ fun SoniqApp() {
             )
         }
 
+        // Full Screen Player
         if (showPlayer && currentSong != null) {
             val animatedOffsetY by animateFloatAsState(
                 targetValue = playerOffsetY,
@@ -620,14 +612,6 @@ fun SoniqApp() {
         }
     }
 }
-
-fun Modifier.liquidGlassBlur(radius: Float = 25f): Modifier = this.then(
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        Modifier.graphicsLayer {
-            renderEffect = RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.CLAMP).asComposeRenderEffect()
-        }
-    } else Modifier
-)
 
 @Composable
 fun LiquidWaterWaveBackground(
@@ -900,6 +884,15 @@ private fun FullPlayer(
         label = "glow"
     )
 
+    val wavePhaseAnim by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 2f * PI.toFloat(),
+        animationSpec = infiniteRepeatable(tween(2400, easing = LinearEasing), RepeatMode.Restart),
+        label = "timeline_wave_phase"
+    )
+
+    val fftBass = RealtimeFftMonitor.bassEnergy
+
     Box(
         Modifier
             .fillMaxSize()
@@ -945,7 +938,7 @@ private fun FullPlayer(
                         .weight(1f)
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(26.dp))
-                        .background(GlassPill)
+                        .background(Color(0x6618102C))
                         .border(1.5.dp, GlassBorder, RoundedCornerShape(26.dp))
                         .padding(18.dp)
                 ) {
@@ -1000,20 +993,53 @@ private fun FullPlayer(
                             }
                     ) {
                         canvasCenter = center
-                        val strokeWidth = 11.dp.toPx()
-                        val outerGlowWidth = 24.dp.toPx()
-                        val arcSize = size.width - outerGlowWidth
+                        val strokeWidth = 10.dp.toPx()
+                        val outerGlowWidth = 22.dp.toPx()
+                        val baseRadius = (size.width - outerGlowWidth) / 2f
 
+                        // Static circular baseline track
                         drawCircle(
                             color = Color(0x352B194E),
-                            radius = arcSize / 2,
+                            radius = baseRadius,
                             center = center,
                             style = Stroke(strokeWidth, cap = StrokeCap.Round)
                         )
 
                         val sweepAngle = 360f * progress
                         if (sweepAngle > 0f) {
-                            drawArc(
+                            // Fluid Beat-Reactive Wavy Arc calculation
+                            val wavePath = Path()
+                            val steps = (sweepAngle * 1.5f).toInt().coerceAtLeast(8)
+                            val waveAmplitude = if (isPlaying) (3.5.dp.toPx() + fftBass * 6.5.dp.toPx()) else 1.5.dp.toPx()
+                            val waveFreq = 8.0
+
+                            var tipX = center.x
+                            var tipY = center.y
+
+                            for (i in 0..steps) {
+                                val currentDeg = -90f + (sweepAngle * (i.toFloat() / steps))
+                                val rad = Math.toRadians(currentDeg.toDouble())
+                                val waveOffset = sin((i.toDouble() / steps) * waveFreq * PI + wavePhaseAnim) * waveAmplitude
+                                val r = baseRadius + waveOffset.toFloat()
+
+                                val px = center.x + (r * cos(rad)).toFloat()
+                                val py = center.y + (r * sin(rad)).toFloat()
+
+                                if (i == 0) {
+                                    wavePath.moveTo(px, py)
+                                } else {
+                                    wavePath.lineTo(px, py)
+                                }
+
+                                if (i == steps) {
+                                    tipX = px
+                                    tipY = py
+                                }
+                            }
+
+                            // Layer 1: Ambient Neon Bloom along the wavy path
+                            drawPath(
+                                path = wavePath,
                                 brush = Brush.sweepGradient(
                                     listOf(
                                         primaryAccent.copy(alpha = 0.45f * pulseGlow),
@@ -1021,36 +1047,25 @@ private fun FullPlayer(
                                         primaryAccent.copy(alpha = 0.45f * pulseGlow)
                                     )
                                 ),
-                                startAngle = -90f,
-                                sweepAngle = sweepAngle,
-                                useCenter = false,
-                                topLeft = Offset((size.width - arcSize) / 2, (size.height - arcSize) / 2),
-                                size = Size(arcSize, arcSize),
-                                style = Stroke(outerGlowWidth, cap = StrokeCap.Round)
+                                style = Stroke(outerGlowWidth, cap = StrokeCap.Round, join = StrokeJoin.Round)
                             )
 
-                            drawArc(
+                            // Layer 2: Glossy Core Liquid Stroke along the wavy path
+                            drawPath(
+                                path = wavePath,
                                 brush = Brush.sweepGradient(
                                     0.0f to secondaryAccent,
                                     0.5f to primaryAccent,
                                     1.0f to secondaryAccent
                                 ),
-                                startAngle = -90f,
-                                sweepAngle = sweepAngle,
-                                useCenter = false,
-                                topLeft = Offset((size.width - arcSize) / 2, (size.height - arcSize) / 2),
-                                size = Size(arcSize, arcSize),
-                                style = Stroke(strokeWidth, cap = StrokeCap.Round)
+                                style = Stroke(strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round)
                             )
 
-                            val angleRad = Math.toRadians((sweepAngle - 90).toDouble())
-                            val radius = arcSize / 2
-                            val headX = center.x + (radius * cos(angleRad)).toFloat()
-                            val headY = center.y + (radius * sin(angleRad)).toFloat()
-
-                            drawCircle(color = secondaryAccent.copy(alpha = 0.6f * pulseGlow), radius = 10.dp.toPx(), center = Offset(headX, headY))
-                            drawCircle(color = Color.White, radius = 7.dp.toPx(), center = Offset(headX, headY))
-                            drawCircle(color = secondaryAccent, radius = 4.dp.toPx(), center = Offset(headX, headY))
+                            // Layer 3: Head Droplet with Beat Reactive Pulse
+                            val dropletRadius = (5.dp.toPx() + fftBass * 3.dp.toPx())
+                            drawCircle(color = secondaryAccent.copy(alpha = 0.6f * pulseGlow), radius = dropletRadius + 4.dp.toPx(), center = Offset(tipX, tipY))
+                            drawCircle(color = Color.White, radius = dropletRadius, center = Offset(tipX, tipY))
+                            drawCircle(color = secondaryAccent, radius = (dropletRadius * 0.6f), center = Offset(tipX, tipY))
                         }
                     }
 
@@ -1197,7 +1212,7 @@ private fun FloatingBottomNavBar(
             .fillMaxWidth()
             .height(66.dp),
         shape = RoundedCornerShape(33.dp),
-        color = Color(0xDD100A24),
+        color = Color(0xEE100A24),
         border = BorderStroke(1.2.dp, GlassBorder)
     ) {
         Row(
