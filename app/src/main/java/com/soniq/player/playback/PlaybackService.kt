@@ -10,6 +10,7 @@ import com.soniq.player.audio.AudioEffectsBridge
 
 class PlaybackService : MediaSessionService() {
     private var session: MediaSession? = null
+    private var noisyReceiver: AudioNoisyReceiver? = null
     private val timerHandler = Handler(Looper.getMainLooper())
     private var timerRunnable: Runnable? = null
 
@@ -24,6 +25,8 @@ class PlaybackService : MediaSessionService() {
         val player = ExoPlayer.Builder(this).build()
         player.addListener(listener)
         session = MediaSession.Builder(this, player).build()
+
+        noisyReceiver = AudioNoisyReceiver(this, player).also { it.register() }
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
@@ -38,6 +41,7 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        noisyReceiver?.unregister()
         timerRunnable?.let(timerHandler::removeCallbacks)
         session?.let {
             it.player.removeListener(listener)

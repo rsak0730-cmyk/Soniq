@@ -6,12 +6,15 @@
 package com.soniq.player.ui
 
 import android.content.ComponentName
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.view.HapticFeedbackConstants
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.*
@@ -34,7 +37,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.*
 import androidx.media3.common.MediaItem
@@ -42,11 +47,14 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
+import androidx.palette.graphics.Palette
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.google.common.util.concurrent.MoreExecutors
 import com.soniq.player.audio.AudioDeviceMonitor
 import com.soniq.player.audio.AudioOutput
+import com.soniq.player.data.LyricLine
+import com.soniq.player.data.LyricsEngine
 import com.soniq.player.data.MusicRepository
 import com.soniq.player.data.Song
 import com.soniq.player.playback.PlaybackService
@@ -54,8 +62,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlin.math.cos
-import kotlin.math.sin
+import kotlin.math.*
 
 private val DeepBlack = Color(0xFF080711)
 private val Purple = Color(0xFF9B6CFF)
@@ -91,6 +98,10 @@ fun SoniqApp() {
     var repeatMode by remember { mutableIntStateOf(Player.REPEAT_MODE_OFF) }
     var showPlayer by remember { mutableStateOf(false) }
 
+    // Dynamic Artwork Palette extraction
+    var dynamicPrimaryColor by remember { mutableStateOf(Purple) }
+    var dynamicSecondaryColor by remember { mutableStateOf(ElectricCyan) }
+
     var outputs by remember { mutableStateOf(emptyList<AudioOutput>()) }
     var favorites by remember { mutableStateOf(prefs.getStringSet("favorites", emptySet())?.toSet() ?: emptySet()) }
     var recents by remember { mutableStateOf(prefs.getStringSet("recents", emptySet())?.toSet() ?: emptySet()) }
@@ -107,9 +118,10 @@ fun SoniqApp() {
     var showCreatePlaylist by remember { mutableStateOf(false) }
     var newPlaylistName by remember { mutableStateOf("") }
     var addToPlaylistSong by remember { mutableStateOf<Song?>(null) }
+    var editTagSong by remember { mutableStateOf<Song?>(null) }
+
     var libraryMode by remember { mutableStateOf("Songs") }
     val listState = rememberLazyListState()
-
     var selectedFilterKey by remember { mutableStateOf<String?>(null) }
 
     BackHandler(enabled = showPlayer || selectedFilterKey != null) {
@@ -138,6 +150,29 @@ fun SoniqApp() {
         recents = (recents + song.id.toString()).toList().takeLast(30).toSet()
         saveRecents()
         showPlayer = true
+    }
+
+    // Extract palette dynamically when current song changes
+    LaunchedEffect(currentSong?.id) {
+        val song = currentSong ?: return@LaunchedEffect
+        withContext(Dispatchers.IO) {
+            val bytes = MusicRepository.extractEmbeddedPicture(context, song.uri)
+            val bmp: Bitmap? = if (bytes != null) {
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            } else null
+
+            if (bmp != null) {
+                Palette.from(bmp).generate().let { palette ->
+                    val dom = palette.getVibrantColor(palette.getDominantColor(Purple.toArgb()))
+                    val sec = palette.getLightVibrantColor(palette.getMutedColor(ElectricCyan.toArgb()))
+                    dynamicPrimaryColor = Color(dom)
+                    dynamicSecondaryColor = Color(sec)
+                }
+            } else {
+                dynamicPrimaryColor = Purple
+                dynamicSecondaryColor = ElectricCyan
+            }
+        }
     }
 
     LaunchedEffect(Unit) {
@@ -181,7 +216,7 @@ fun SoniqApp() {
                     currentSong = songs.firstOrNull { it.title == title }
                 }
             }
-            delay(300)
+            delay(250)
         }
     }
 
@@ -199,8 +234,12 @@ fun SoniqApp() {
     }
 
     Box(Modifier.fillMaxSize()) {
-        // High-Quality Fluid Liquid Background (Always visible & reactive)
-        LiquidWaterShimmerBackground(isPlaying = isPlaying)
+        // Multi-Layered Palette Reactive Shimmer
+        LiquidWaterShimmerBackground(
+            isPlaying = isPlaying,
+            primaryAccent = dynamicPrimaryColor,
+            secondaryAccent = dynamicSecondaryColor
+        )
 
         Column(
             Modifier
@@ -227,12 +266,11 @@ fun SoniqApp() {
                 }
                 if (currentSong != null) {
                     IconButton(onClick = { showPlayer = true }) {
-                        Icon(Icons.Default.GraphicEq, contentDescription = "Now Playing", tint = ElectricCyan)
+                        Icon(Icons.Default.GraphicEq, contentDescription = "Now Playing", tint = dynamicSecondaryColor)
                     }
                 }
             }
 
-            // Glass Search Bar
             OutlinedTextField(
                 value = query,
                 onValueChange = {
@@ -250,7 +288,7 @@ fun SoniqApp() {
                         fontSize = 13.sp
                     )
                 },
-                leadingIcon = { Icon(Icons.Default.Search, null, tint = ElectricCyan) },
+                leadingIcon = { Icon(Icons.Default.Search, null, tint = dynamicSecondaryColor) },
                 trailingIcon = {
                     if (query.isNotEmpty()) {
                         IconButton(onClick = { query = "" }) { Icon(Icons.Default.Close, "Clear", tint = MutedLavender) }
@@ -259,11 +297,11 @@ fun SoniqApp() {
                 singleLine = true,
                 shape = RoundedCornerShape(26.dp),
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = ElectricCyan,
+                    focusedBorderColor = dynamicSecondaryColor,
                     unfocusedBorderColor = GlassBorder,
                     focusedTextColor = Color.White,
                     unfocusedTextColor = Color.White,
-                    cursorColor = ElectricCyan,
+                    cursorColor = dynamicSecondaryColor,
                     focusedContainerColor = GlassSurface,
                     unfocusedContainerColor = GlassSurface
                 )
@@ -305,6 +343,7 @@ fun SoniqApp() {
                             saveFavorites()
                         },
                         onAdd = { addToPlaylistSong = it },
+                        onEdit = { editTagSong = it },
                         modifier = Modifier.fillMaxSize()
                     )
                     MainTab.EQUALIZER -> EqualizerScreen(Modifier.fillMaxSize())
@@ -339,9 +378,10 @@ fun SoniqApp() {
             }
         }
 
-        // Floating Sticky Bottom Bar
+        // Floating Bottom Bar
         FloatingBottomNavBar(
             currentTab = currentTab,
+            activeColor = dynamicSecondaryColor,
             onSelect = { currentTab = it },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -349,7 +389,7 @@ fun SoniqApp() {
                 .padding(horizontal = 18.dp, vertical = 12.dp)
         )
 
-        // Isolated Full Screen Player
+        // Full Screen Player
         if (showPlayer && currentSong != null) {
             FullPlayer(
                 song = currentSong!!,
@@ -358,6 +398,8 @@ fun SoniqApp() {
                 duration = duration,
                 shuffle = shuffle,
                 repeatMode = repeatMode,
+                primaryAccent = dynamicPrimaryColor,
+                secondaryAccent = dynamicSecondaryColor,
                 onClose = { showPlayer = false },
                 onPlayPause = { controller?.let { if (it.isPlaying) it.pause() else it.play() } },
                 onNext = { controller?.seekToNextMediaItem() },
@@ -376,7 +418,20 @@ fun SoniqApp() {
             )
         }
 
-        // Playlist Creation Dialog
+        // Tag Editor Dialog
+        editTagSong?.let { song ->
+            TagEditorDialog(
+                song = song,
+                onDismiss = { editTagSong = null },
+                onSave = { updatedTitle, updatedArtist ->
+                    songs = songs.map {
+                        if (it.id == song.id) it.copy(title = updatedTitle, artist = updatedArtist) else it
+                    }
+                    editTagSong = null
+                }
+            )
+        }
+
         if (showCreatePlaylist) {
             AlertDialog(
                 onDismissRequest = { showCreatePlaylist = false },
@@ -446,19 +501,17 @@ fun SoniqApp() {
     }
 }
 
-/**
- * Liquid Water Shimmer Background:
- * Uses fluid sine/cosine orbital paths and screen-proportional radiant gradients
- * to produce smooth water reflections, caustic shimmer beams, and ambient violet blooms.
- */
 @Composable
-fun LiquidWaterShimmerBackground(isPlaying: Boolean, modifier: Modifier = Modifier) {
+fun LiquidWaterShimmerBackground(
+    isPlaying: Boolean,
+    primaryAccent: Color = Purple,
+    secondaryAccent: Color = ElectricCyan,
+    modifier: Modifier = Modifier
+) {
     val infiniteTransition = rememberInfiniteTransition(label = "liquid_shimmer_trans")
-    
-    // Wave oscillation speed changes dynamically between playing and paused states
     val waveT by infiniteTransition.animateFloat(
         initialValue = 0f,
-        targetValue = 6.28318f, // 2*PI radians
+        targetValue = 6.28318f,
         animationSpec = infiniteRepeatable(
             animation = tween(if (isPlaying) 6500 else 12000, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
@@ -480,10 +533,8 @@ fun LiquidWaterShimmerBackground(isPlaying: Boolean, modifier: Modifier = Modifi
         val w = size.width
         val h = size.height
 
-        // 1. OLED Base Color
         drawRect(color = DeepBlack)
 
-        // 2. Upper Floating Purple Liquid Orb (Oscillates across top third)
         val orb1X = w * (0.68f + 0.18f * cos(waveT.toDouble()).toFloat())
         val orb1Y = h * (0.24f + 0.12f * sin(waveT.toDouble()).toFloat())
         val orb1Radius = w * (if (isPlaying) 0.85f else 0.70f)
@@ -491,8 +542,8 @@ fun LiquidWaterShimmerBackground(isPlaying: Boolean, modifier: Modifier = Modifi
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(
-                    VioletGlow.copy(alpha = if (isPlaying) 0.42f else 0.22f),
-                    Purple.copy(alpha = if (isPlaying) 0.24f else 0.10f),
+                    primaryAccent.copy(alpha = if (isPlaying) 0.44f else 0.22f),
+                    primaryAccent.copy(alpha = if (isPlaying) 0.20f else 0.08f),
                     Color.Transparent
                 ),
                 center = Offset(orb1X, orb1Y),
@@ -502,7 +553,6 @@ fun LiquidWaterShimmerBackground(isPlaying: Boolean, modifier: Modifier = Modifi
             center = Offset(orb1X, orb1Y)
         )
 
-        // 3. Lower Electric Cyan Liquid Pool (Oscillates around bottom-left)
         val orb2X = w * (0.28f + 0.15f * sin((waveT * 0.8f).toDouble()).toFloat())
         val orb2Y = h * (0.75f + 0.10f * cos((waveT * 0.8f).toDouble()).toFloat())
         val orb2Radius = w * (if (isPlaying) 0.90f else 0.75f)
@@ -510,8 +560,8 @@ fun LiquidWaterShimmerBackground(isPlaying: Boolean, modifier: Modifier = Modifi
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(
-                    ElectricCyan.copy(alpha = if (isPlaying) 0.30f else 0.14f),
-                    Color(0xFF20B9C9).copy(alpha = if (isPlaying) 0.16f else 0.06f),
+                    secondaryAccent.copy(alpha = if (isPlaying) 0.32f else 0.14f),
+                    secondaryAccent.copy(alpha = if (isPlaying) 0.14f else 0.05f),
                     Color.Transparent
                 ),
                 center = Offset(orb2X, orb2Y),
@@ -521,27 +571,12 @@ fun LiquidWaterShimmerBackground(isPlaying: Boolean, modifier: Modifier = Modifi
             center = Offset(orb2X, orb2Y)
         )
 
-        // 4. Center Ambient Violet Blend
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    Purple.copy(alpha = if (isPlaying) 0.18f else 0.08f),
-                    Color.Transparent
-                ),
-                center = Offset(w * 0.5f, h * 0.5f),
-                radius = w * 0.65f
-            ),
-            radius = w * 0.65f,
-            center = Offset(w * 0.5f, h * 0.5f)
-        )
-
-        // 5. Water Shimmer Rays (Linear caustic reflection)
         drawRect(
             brush = Brush.linearGradient(
                 0.0f to Color.Transparent,
-                0.45f to ElectricCyan.copy(alpha = if (isPlaying) 0.09f else 0.03f),
-                0.55f to Color.White.copy(alpha = if (isPlaying) 0.07f else 0.02f),
-                0.65f to Purple.copy(alpha = if (isPlaying) 0.06f else 0.02f),
+                0.45f to secondaryAccent.copy(alpha = if (isPlaying) 0.08f else 0.03f),
+                0.55f to Color.White.copy(alpha = if (isPlaying) 0.06f else 0.02f),
+                0.65f to primaryAccent.copy(alpha = if (isPlaying) 0.05f else 0.02f),
                 1.0f to Color.Transparent,
                 start = Offset(w * causticShift - w * 0.4f, 0f),
                 end = Offset(w * causticShift + w * 0.4f, h)
@@ -553,6 +588,7 @@ fun LiquidWaterShimmerBackground(isPlaying: Boolean, modifier: Modifier = Modifi
 @Composable
 private fun FloatingBottomNavBar(
     currentTab: MainTab,
+    activeColor: Color,
     onSelect: (MainTab) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -591,7 +627,7 @@ private fun FloatingBottomNavBar(
                         Icon(
                             tab.icon,
                             contentDescription = tab.label,
-                            tint = if (selected) ElectricCyan else MutedLavender.copy(alpha = 0.6f),
+                            tint = if (selected) activeColor else MutedLavender.copy(alpha = 0.6f),
                             modifier = Modifier.size(24.dp)
                         )
                         if (selected) {
@@ -600,7 +636,7 @@ private fun FloatingBottomNavBar(
                                     .padding(top = 3.dp)
                                     .size(4.dp)
                                     .clip(CircleShape)
-                                    .background(Purple)
+                                    .background(activeColor)
                             )
                         }
                     }
@@ -665,7 +701,7 @@ private fun HomeScreen(
             Text("No recently played songs yet.", color = MutedLavender, fontSize = 12.sp)
         } else {
             recentSongs.forEach { song ->
-                SongCard(song, song.id.toString() in favorites, { onPlay(song) }, {}, {})
+                SongCard(song, song.id.toString() in favorites, { onPlay(song) }, {}, {}, {})
                 Spacer(Modifier.height(6.dp))
             }
         }
@@ -678,7 +714,7 @@ private fun HomeScreen(
             Text("No favorites added yet.", color = MutedLavender, fontSize = 12.sp)
         } else {
             favSongs.forEach { song ->
-                SongCard(song, true, { onPlay(song) }, {}, {})
+                SongCard(song, true, { onPlay(song) }, {}, {}, {})
                 Spacer(Modifier.height(6.dp))
             }
         }
@@ -700,6 +736,7 @@ private fun LibraryScreen(
     onPlay: (Song, List<Song>) -> Unit,
     onFavorite: (Song) -> Unit,
     onAdd: (Song) -> Unit,
+    onEdit: (Song) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val artistGroups = remember(allSongs) {
@@ -858,7 +895,8 @@ private fun LibraryScreen(
                                     favorite = song.id.toString() in favorites,
                                     onPlay = { onPlay(song, songsToDisplay) },
                                     onFavorite = { onFavorite(song) },
-                                    onAdd = { onAdd(song) }
+                                    onAdd = { onAdd(song) },
+                                    onEdit = { onEdit(song) }
                                 )
                             }
                         }
@@ -1013,7 +1051,8 @@ private fun SongCard(
     favorite: Boolean,
     onPlay: () -> Unit,
     onFavorite: () -> Unit,
-    onAdd: () -> Unit
+    onAdd: () -> Unit,
+    onEdit: () -> Unit
 ) {
     Surface(
         color = GlassSurface,
@@ -1038,6 +1077,9 @@ private fun SongCard(
             }
             IconButton(onClick = onAdd) {
                 Icon(Icons.Default.PlaylistAdd, null, tint = ElectricCyan)
+            }
+            IconButton(onClick = onEdit) {
+                Icon(Icons.Default.Edit, null, tint = MutedLavender.copy(alpha = 0.7f), modifier = Modifier.size(18.dp))
             }
         }
     }
@@ -1088,6 +1130,12 @@ private fun SongThumb(song: Song, modifier: Modifier = Modifier) {
     }
 }
 
+/**
+ * Full Player with:
+ * - Touch-Draggable Circular Seeking with Haptics
+ * - Dynamic Artwork Palette Bloom
+ * - Synchronized Karaoke Lyrics View
+ */
 @Composable
 private fun FullPlayer(
     song: Song,
@@ -1096,6 +1144,8 @@ private fun FullPlayer(
     duration: Long,
     shuffle: Boolean,
     repeatMode: Int,
+    primaryAccent: Color,
+    secondaryAccent: Color,
     onClose: () -> Unit,
     onPlayPause: () -> Unit,
     onNext: () -> Unit,
@@ -1105,6 +1155,27 @@ private fun FullPlayer(
     onRepeat: () -> Unit,
     onQueue: () -> Unit
 ) {
+    val context = LocalContext.current
+    val view = LocalView.current
+    var showLyrics by remember { mutableStateOf(false) }
+    var lyrics by remember { mutableStateOf<List<LyricLine>>(emptyList()) }
+    val lyricsListState = rememberLazyListState()
+
+    LaunchedEffect(song.id) {
+        lyrics = LyricsEngine.loadLyricsForSong(context, song)
+    }
+
+    // Auto-scroll lyrics to match playback time
+    val currentLyricIndex = remember(position, lyrics) {
+        lyrics.indexOfLast { it.timestampMs <= position }.coerceAtLeast(0)
+    }
+
+    LaunchedEffect(currentLyricIndex) {
+        if (showLyrics && lyrics.isNotEmpty()) {
+            lyricsListState.animateScrollToItem((currentLyricIndex - 2).coerceAtLeast(0))
+        }
+    }
+
     val progress = if (duration > 0) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f
 
     val infiniteTransition = rememberInfiniteTransition(label = "player_liquid")
@@ -1120,92 +1191,164 @@ private fun FullPlayer(
             .fillMaxSize()
             .pointerInput(Unit) { detectTapGestures { } }
     ) {
-        // Shimmering background inside full player as well
-        LiquidWaterShimmerBackground(isPlaying = isPlaying)
+        LiquidWaterShimmerBackground(
+            isPlaying = isPlaying,
+            primaryAccent = primaryAccent,
+            secondaryAccent = secondaryAccent
+        )
 
         Column(
             Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
-                .padding(horizontal = 24.dp, vertical = 16.dp),
+                .padding(horizontal = 24.dp, vertical = 14.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onClose) { Icon(Icons.Default.KeyboardArrowDown, null, tint = Color.White) }
                 Text("NOW PLAYING", color = MutedLavender, modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                IconButton(onClick = onQueue) { Icon(Icons.Default.QueueMusic, null, tint = ElectricCyan) }
+                IconButton(onClick = { showLyrics = !showLyrics }) {
+                    Icon(Icons.Default.Lyrics, contentDescription = "Lyrics", tint = if (showLyrics) secondaryAccent else MutedLavender)
+                }
+                IconButton(onClick = onQueue) { Icon(Icons.Default.QueueMusic, null, tint = secondaryAccent) }
             }
 
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(10.dp))
 
-            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                Canvas(Modifier.size(285.dp)) {
-                    val strokeWidth = 9.dp.toPx()
-                    val outerGlowWidth = 18.dp.toPx()
-                    val arcSize = size.width - outerGlowWidth
-
-                    drawCircle(
-                        color = Color(0x334E3577),
-                        radius = arcSize / 2,
-                        center = center,
-                        style = Stroke(strokeWidth, cap = StrokeCap.Round)
-                    )
-
-                    val sweepAngle = 360f * progress
-                    if (sweepAngle > 0f) {
-                        drawArc(
-                            brush = Brush.sweepGradient(
-                                listOf(
-                                    VioletGlow.copy(alpha = 0.35f * pulseGlow),
-                                    ElectricCyan.copy(alpha = 0.5f * pulseGlow),
-                                    VioletGlow.copy(alpha = 0.35f * pulseGlow)
+            if (showLyrics) {
+                // Interactive Synchronized Karaoke Lyrics Display
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(GlassSurface)
+                        .border(1.dp, GlassBorder, RoundedCornerShape(24.dp))
+                        .padding(16.dp)
+                ) {
+                    if (lyrics.isEmpty()) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("No local .lrc lyrics file found.", color = MutedLavender, fontSize = 14.sp)
+                        }
+                    } else {
+                        LazyColumn(state = lyricsListState, modifier = Modifier.fillMaxSize()) {
+                            itemsIndexed(lyrics) { idx, line ->
+                                val isCurrent = idx == currentLyricIndex
+                                Text(
+                                    text = line.text,
+                                    color = if (isCurrent) secondaryAccent else MutedLavender.copy(alpha = 0.45f),
+                                    fontSize = if (isCurrent) 20.sp else 15.sp,
+                                    fontWeight = if (isCurrent) FontWeight.Black else FontWeight.Normal,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 10.dp)
+                                        .clickable { onSeek(line.timestampMs) }
                                 )
-                            ),
-                            startAngle = -90f,
-                            sweepAngle = sweepAngle,
-                            useCenter = false,
-                            topLeft = Offset((size.width - arcSize) / 2, (size.height - arcSize) / 2),
-                            size = Size(arcSize, arcSize),
-                            style = Stroke(outerGlowWidth, cap = StrokeCap.Round)
-                        )
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Interactive Circular Liquid Waveform Scrubber
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    var canvasCenter by remember { mutableStateOf(Offset.Zero) }
 
-                        drawArc(
-                            brush = Brush.sweepGradient(
-                                0.0f to ElectricCyan,
-                                0.5f to Purple,
-                                1.0f to ElectricCyan
-                            ),
-                            startAngle = -90f,
-                            sweepAngle = sweepAngle,
-                            useCenter = false,
-                            topLeft = Offset((size.width - arcSize) / 2, (size.height - arcSize) / 2),
-                            size = Size(arcSize, arcSize),
+                    Canvas(
+                        Modifier
+                            .size(285.dp)
+                            .pointerInput(duration) {
+                                detectDragGestures { change, _ ->
+                                    val touch = change.position
+                                    val dx = touch.x - canvasCenter.x
+                                    val dy = touch.y - canvasCenter.y
+                                    var angle = Math.toDegrees(atan2(dy.toDouble(), dx.toDouble())).toFloat() + 90f
+                                    if (angle < 0) angle += 360f
+
+                                    val seekPercent = (angle / 360f).coerceIn(0f, 1f)
+                                    val targetMs = (seekPercent * duration).toLong()
+                                    onSeek(targetMs)
+                                    view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                }
+                            }
+                    ) {
+                        canvasCenter = center
+                        val strokeWidth = 9.dp.toPx()
+                        val outerGlowWidth = 18.dp.toPx()
+                        val arcSize = size.width - outerGlowWidth
+
+                        drawCircle(
+                            color = Color(0x334E3577),
+                            radius = arcSize / 2,
+                            center = center,
                             style = Stroke(strokeWidth, cap = StrokeCap.Round)
                         )
 
-                        val angleRad = Math.toRadians((sweepAngle - 90).toDouble())
-                        val radius = arcSize / 2
-                        val headX = center.x + (radius * cos(angleRad)).toFloat()
-                        val headY = center.y + (radius * sin(angleRad)).toFloat()
+                        val sweepAngle = 360f * progress
+                        if (sweepAngle > 0f) {
+                            drawArc(
+                                brush = Brush.sweepGradient(
+                                    listOf(
+                                        primaryAccent.copy(alpha = 0.35f * pulseGlow),
+                                        secondaryAccent.copy(alpha = 0.5f * pulseGlow),
+                                        primaryAccent.copy(alpha = 0.35f * pulseGlow)
+                                    )
+                                ),
+                                startAngle = -90f,
+                                sweepAngle = sweepAngle,
+                                useCenter = false,
+                                topLeft = Offset((size.width - arcSize) / 2, (size.height - arcSize) / 2),
+                                size = Size(arcSize, arcSize),
+                                style = Stroke(outerGlowWidth, cap = StrokeCap.Round)
+                            )
 
-                        drawCircle(color = Color.White, radius = 6.5.dp.toPx(), center = Offset(headX, headY))
-                        drawCircle(color = ElectricCyan, radius = 4.dp.toPx(), center = Offset(headX, headY))
+                            drawArc(
+                                brush = Brush.sweepGradient(
+                                    0.0f to secondaryAccent,
+                                    0.5f to primaryAccent,
+                                    1.0f to secondaryAccent
+                                ),
+                                startAngle = -90f,
+                                sweepAngle = sweepAngle,
+                                useCenter = false,
+                                topLeft = Offset((size.width - arcSize) / 2, (size.height - arcSize) / 2),
+                                size = Size(arcSize, arcSize),
+                                style = Stroke(strokeWidth, cap = StrokeCap.Round)
+                            )
+
+                            val angleRad = Math.toRadians((sweepAngle - 90).toDouble())
+                            val radius = arcSize / 2
+                            val headX = center.x + (radius * cos(angleRad)).toFloat()
+                            val headY = center.y + (radius * sin(angleRad)).toFloat()
+
+                            drawCircle(color = Color.White, radius = 6.5.dp.toPx(), center = Offset(headX, headY))
+                            drawCircle(color = secondaryAccent, radius = 4.dp.toPx(), center = Offset(headX, headY))
+                        }
                     }
-                }
 
-                Box(
-                    modifier = Modifier
-                        .size(230.dp)
-                        .clip(CircleShape)
-                        .border(1.5.dp, GlassBorder, CircleShape),
-                    contentAlignment = Alignment.Center
-                ) {
-                    SongThumb(song, Modifier.fillMaxSize())
-                }
+                    Box(
+                        modifier = Modifier
+                            .size(230.dp)
+                            .clip(CircleShape)
+                            .border(1.5.dp, GlassBorder, CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        SongThumb(song, Modifier.fillMaxSize())
+                    }
 
-                if (isPlaying) {
-                    MiniVisualizer(Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp))
+                    if (isPlaying) {
+                        MiniVisualizer(
+                            accent1 = secondaryAccent,
+                            accent2 = primaryAccent,
+                            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp)
+                        )
+                    }
                 }
             }
 
@@ -1213,13 +1356,13 @@ private fun FullPlayer(
             Text(song.title, color = Color.White, fontSize = 21.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(song.artist, color = MutedLavender, fontSize = 13.sp)
 
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(12.dp))
 
             Slider(
                 value = if (duration > 0) position.toFloat().coerceIn(0f, duration.toFloat()) else 0f,
                 onValueChange = { onSeek(it.toLong()) },
                 valueRange = 0f..duration.coerceAtLeast(1L).toFloat(),
-                colors = SliderDefaults.colors(thumbColor = ElectricCyan, activeTrackColor = Purple)
+                colors = SliderDefaults.colors(thumbColor = secondaryAccent, activeTrackColor = primaryAccent)
             )
 
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -1227,14 +1370,14 @@ private fun FullPlayer(
                 Text(timeText(duration), color = MutedLavender, fontSize = 12.sp)
             }
 
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(10.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onShuffle) { Icon(Icons.Default.Shuffle, null, tint = if (shuffle) ElectricCyan else MutedLavender) }
+                IconButton(onClick = onShuffle) { Icon(Icons.Default.Shuffle, null, tint = if (shuffle) secondaryAccent else MutedLavender) }
                 IconButton(onClick = onPrevious) { Icon(Icons.Default.SkipPrevious, null, tint = Color.White, modifier = Modifier.size(36.dp)) }
                 Surface(
                     shape = CircleShape,
-                    color = VioletGlow,
-                    border = BorderStroke(2.dp, ElectricCyan),
+                    color = primaryAccent,
+                    border = BorderStroke(2.dp, secondaryAccent),
                     modifier = Modifier.size(68.dp).clickable(onClick = onPlayPause)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
@@ -1246,7 +1389,7 @@ private fun FullPlayer(
                     Icon(
                         if (repeatMode == Player.REPEAT_MODE_ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
                         null,
-                        tint = if (repeatMode != Player.REPEAT_MODE_OFF) ElectricCyan else MutedLavender
+                        tint = if (repeatMode != Player.REPEAT_MODE_OFF) secondaryAccent else MutedLavender
                     )
                 }
             }
@@ -1256,7 +1399,51 @@ private fun FullPlayer(
 }
 
 @Composable
-private fun MiniVisualizer(modifier: Modifier = Modifier) {
+private fun TagEditorDialog(
+    song: Song,
+    onDismiss: () -> Unit,
+    onSave: (String, String) -> Unit
+) {
+    var title by remember { mutableStateOf(song.title) }
+    var artist by remember { mutableStateOf(song.artist) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Color(0xFF1E1736),
+        title = { Text("Edit Song Metadata", color = Color.White) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    label = { Text("Song Title", color = MutedLavender) },
+                    colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White)
+                )
+                OutlinedTextField(
+                    value = artist,
+                    onValueChange = { artist = it },
+                    label = { Text("Artist Name", color = MutedLavender) },
+                    colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White)
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(title.trim(), artist.trim()) }) {
+                Text("Save", color = ElectricCyan)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel", color = MutedLavender) }
+        }
+    )
+}
+
+@Composable
+private fun MiniVisualizer(
+    accent1: Color = ElectricCyan,
+    accent2: Color = Purple,
+    modifier: Modifier = Modifier
+) {
     val transition = rememberInfiniteTransition(label = "visualizer")
     Row(modifier, horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically) {
         repeat(20) { i ->
@@ -1266,7 +1453,7 @@ private fun MiniVisualizer(modifier: Modifier = Modifier) {
                 animationSpec = infiniteRepeatable(tween(260 + i * 18, easing = FastOutSlowInEasing), RepeatMode.Reverse),
                 label = "bar$i"
             )
-            Box(Modifier.width(3.dp).height(h.dp).clip(CircleShape).background(Brush.verticalGradient(listOf(ElectricCyan, Purple))))
+            Box(Modifier.width(3.dp).height(h.dp).clip(CircleShape).background(Brush.verticalGradient(listOf(accent1, accent2))))
         }
     }
 }
@@ -1414,7 +1601,7 @@ private fun SettingsScreen(
         }
 
         Spacer(Modifier.height(20.dp))
-        Text("SONIQ v0.2.0 • Premium Glass Edition", color = MutedLavender.copy(alpha = 0.5f), fontSize = 11.sp)
+        Text("SONIQ v0.3.0 • Premium Glass Edition", color = MutedLavender.copy(alpha = 0.5f), fontSize = 11.sp)
     }
 }
 
