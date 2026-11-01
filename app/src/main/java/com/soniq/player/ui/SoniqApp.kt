@@ -8,15 +8,20 @@ package com.soniq.player.ui
 import android.content.ComponentName
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.RenderEffect
+import android.graphics.Shader
 import android.net.Uri
+import android.os.Build
 import android.view.HapticFeedbackConstants
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
@@ -32,7 +37,6 @@ import androidx.compose.ui.draw.*
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
@@ -55,10 +59,8 @@ import coil.request.ImageRequest
 import com.google.common.util.concurrent.MoreExecutors
 import com.soniq.player.audio.AudioDeviceMonitor
 import com.soniq.player.audio.AudioOutput
-import com.soniq.player.data.LyricLine
-import com.soniq.player.data.LyricsEngine
-import com.soniq.player.data.MusicRepository
-import com.soniq.player.data.Song
+import com.soniq.player.audio.RealtimeFftMonitor
+import com.soniq.player.data.*
 import com.soniq.player.playback.PlaybackService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -86,6 +88,7 @@ enum class MainTab(val label: String, val icon: ImageVector) {
 @Composable
 fun SoniqApp() {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val prefs = remember { context.getSharedPreferences("soniq_user_data", 0) }
 
     var songs by remember { mutableStateOf(emptyList<Song>()) }
@@ -130,6 +133,9 @@ fun SoniqApp() {
     var libraryMode by remember { mutableStateOf("Songs") }
     val listState = rememberLazyListState()
     var selectedFilterKey by remember { mutableStateOf<String?>(null) }
+
+    // Dismiss player gesture offset
+    var playerOffsetY by remember { mutableFloatStateOf(0f) }
 
     BackHandler(enabled = showPlayer || selectedFilterKey != null) {
         if (showPlayer) showPlayer = false else selectedFilterKey = null
@@ -222,7 +228,7 @@ fun SoniqApp() {
                     currentSong = songs.firstOrNull { it.title == title }
                 }
             }
-            delay(200)
+            delay(150)
         }
     }
 
@@ -276,41 +282,48 @@ fun SoniqApp() {
                 }
             }
 
-            OutlinedTextField(
-                value = query,
-                onValueChange = {
-                    query = it
-                    if (it.length >= 2) {
-                        searchHistory = (listOf(it) + searchHistory.filterNot { old -> old == it }).take(8)
-                        prefs.edit().putStringSet("search_history", searchHistory.toSet()).apply()
-                    }
-                },
-                modifier = Modifier.fillMaxWidth(),
-                placeholder = {
-                    Text(
-                        "Search songs, artists, albums, folders...",
-                        color = MutedLavender.copy(alpha = 0.6f),
-                        fontSize = 13.sp
+            // Glass Search Bar with RenderEffect Depth Blur
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .liquidGlassBlur(radius = 20f)
+            ) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = {
+                        query = it
+                        if (it.length >= 2) {
+                            searchHistory = (listOf(it) + searchHistory.filterNot { old -> old == it }).take(8)
+                            prefs.edit().putStringSet("search_history", searchHistory.toSet()).apply()
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = {
+                        Text(
+                            "Search songs, artists, albums, folders...",
+                            color = MutedLavender.copy(alpha = 0.6f),
+                            fontSize = 13.sp
+                        )
+                    },
+                    leadingIcon = { Icon(Icons.Default.Search, null, tint = dynamicSecondaryColor) },
+                    trailingIcon = {
+                        if (query.isNotEmpty()) {
+                            IconButton(onClick = { query = "" }) { Icon(Icons.Default.Close, "Clear", tint = MutedLavender) }
+                        }
+                    },
+                    singleLine = true,
+                    shape = RoundedCornerShape(26.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = dynamicSecondaryColor,
+                        unfocusedBorderColor = GlassBorder,
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        cursorColor = dynamicSecondaryColor,
+                        focusedContainerColor = GlassPill,
+                        unfocusedContainerColor = GlassPill
                     )
-                },
-                leadingIcon = { Icon(Icons.Default.Search, null, tint = dynamicSecondaryColor) },
-                trailingIcon = {
-                    if (query.isNotEmpty()) {
-                        IconButton(onClick = { query = "" }) { Icon(Icons.Default.Close, "Clear", tint = MutedLavender) }
-                    }
-                },
-                singleLine = true,
-                shape = RoundedCornerShape(26.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = dynamicSecondaryColor,
-                    unfocusedBorderColor = GlassBorder,
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White,
-                    cursorColor = dynamicSecondaryColor,
-                    focusedContainerColor = GlassPill,
-                    unfocusedContainerColor = GlassPill
                 )
-            )
+            }
 
             Spacer(Modifier.height(10.dp))
 
@@ -389,42 +402,72 @@ fun SoniqApp() {
             }
         }
 
-        FloatingBottomNavBar(
-            currentTab = currentTab,
-            activeColor = dynamicSecondaryColor,
-            onSelect = { currentTab = it },
-            modifier = Modifier
+        // Floating Sticky Bottom Bar with RenderEffect depth blur
+        Box(
+            Modifier
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
                 .padding(horizontal = 18.dp, vertical = 12.dp)
-        )
-
-        if (showPlayer && currentSong != null) {
-            FullPlayer(
-                song = currentSong!!,
-                isPlaying = isPlaying,
-                position = position,
-                duration = duration,
-                shuffle = shuffle,
-                repeatMode = repeatMode,
-                primaryAccent = dynamicPrimaryColor,
-                secondaryAccent = dynamicSecondaryColor,
-                onClose = { showPlayer = false },
-                onPlayPause = { controller?.let { if (it.isPlaying) it.pause() else it.play() } },
-                onNext = { controller?.seekToNextMediaItem() },
-                onPrevious = { controller?.seekToPreviousMediaItem() },
-                onSeek = { controller?.seekTo(it) },
-                onShuffle = { shuffle = !shuffle; controller?.shuffleModeEnabled = shuffle },
-                onRepeat = {
-                    repeatMode = when (repeatMode) {
-                        Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
-                        Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
-                        else -> Player.REPEAT_MODE_OFF
-                    }
-                    controller?.repeatMode = repeatMode
-                },
-                onQueue = { currentTab = MainTab.LIBRARY; showPlayer = false }
+                .liquidGlassBlur(radius = 35f)
+        ) {
+            FloatingBottomNavBar(
+                currentTab = currentTab,
+                activeColor = dynamicSecondaryColor,
+                onSelect = { currentTab = it }
             )
+        }
+
+        // Fluid Drag-to-Dismiss Swipable Full Screen Player
+        if (showPlayer && currentSong != null) {
+            val animatedOffsetY by animateFloatAsState(
+                targetValue = playerOffsetY,
+                animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMedium),
+                label = "player_drag"
+            )
+
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .offset { IntOffset(0, animatedOffsetY.roundToInt()) }
+                    .draggable(
+                        orientation = Orientation.Vertical,
+                        state = rememberDraggableState { delta ->
+                            playerOffsetY = (playerOffsetY + delta).coerceAtLeast(0f)
+                        },
+                        onDragStopped = {
+                            if (playerOffsetY > 380f) {
+                                showPlayer = false
+                            }
+                            playerOffsetY = 0f
+                        }
+                    )
+            ) {
+                FullPlayer(
+                    song = currentSong!!,
+                    isPlaying = isPlaying,
+                    position = position,
+                    duration = duration,
+                    shuffle = shuffle,
+                    repeatMode = repeatMode,
+                    primaryAccent = dynamicPrimaryColor,
+                    secondaryAccent = dynamicSecondaryColor,
+                    onClose = { showPlayer = false },
+                    onPlayPause = { controller?.let { if (it.isPlaying) it.pause() else it.play() } },
+                    onNext = { controller?.seekToNextMediaItem() },
+                    onPrevious = { controller?.seekToPreviousMediaItem() },
+                    onSeek = { controller?.seekTo(it) },
+                    onShuffle = { shuffle = !shuffle; controller?.shuffleModeEnabled = shuffle },
+                    onRepeat = {
+                        repeatMode = when (repeatMode) {
+                            Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
+                            Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+                            else -> Player.REPEAT_MODE_OFF
+                        }
+                        controller?.repeatMode = repeatMode
+                    },
+                    onQueue = { currentTab = MainTab.LIBRARY; showPlayer = false }
+                )
+            }
         }
 
         if (showCreateAlbum) {
@@ -496,13 +539,14 @@ fun SoniqApp() {
             )
         }
 
+        // Tag Editor & Cover Scraper Dialog
         editTagSong?.let { song ->
-            TagEditorDialog(
+            TagEditorAndCoverDialog(
                 song = song,
                 onDismiss = { editTagSong = null },
-                onSave = { updatedTitle, updatedArtist ->
+                onSave = { updatedTitle, updatedArtist, newArtUri ->
                     songs = songs.map {
-                        if (it.id == song.id) it.copy(title = updatedTitle, artist = updatedArtist) else it
+                        if (it.id == song.id) it.copy(title = updatedTitle, artist = updatedArtist, albumArtUri = newArtUri ?: it.albumArtUri) else it
                     }
                     editTagSong = null
                 }
@@ -579,8 +623,18 @@ fun SoniqApp() {
 }
 
 /**
- * Multi-layer water wave physics engine
- * Simulates fluid caustic wave currents, refraction glows, and surface water ripples.
+ * Modifier wrapper for Android 12+ hardware RenderEffect blur
+ */
+fun Modifier.liquidGlassBlur(radius: Float = 25f): Modifier = this.then(
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        Modifier.graphicsLayer {
+            renderEffect = RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.CLAMP).asComposeRenderEffect()
+        }
+    } else Modifier
+)
+
+/**
+ * Audio-reactive fluid surface: Hooked to RealtimeFftMonitor.bassEnergy
  */
 @Composable
 fun LiquidWaterWaveBackground(
@@ -590,6 +644,7 @@ fun LiquidWaterWaveBackground(
     modifier: Modifier = Modifier
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "water_caustics")
+    val fftBass = RealtimeFftMonitor.bassEnergy
 
     val t1 by infiniteTransition.animateFloat(
         initialValue = 0f, targetValue = 2f * PI.toFloat(),
@@ -603,27 +658,23 @@ fun LiquidWaterWaveBackground(
         label = "wave2"
     )
 
-    val ripplePulse by infiniteTransition.animateFloat(
-        initialValue = 0.85f, targetValue = 1.15f,
-        animationSpec = infiniteRepeatable(tween(if (isPlaying) 2800 else 6000, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-        label = "ripple_pulse"
-    )
-
     Canvas(modifier = modifier.fillMaxSize()) {
         val w = size.width
         val h = size.height
 
         drawRect(OLEDBlack)
 
-        // Wave Layer 1: Top Right Fluid Current
+        val reactiveFactor = if (isPlaying) 1f + (fftBass * 0.45f) else 1f
+
+        // Reactive Wave 1: Top Right Current
         val x1 = w * (0.65f + 0.18f * cos(t1.toDouble()).toFloat())
         val y1 = h * (0.28f + 0.14f * sin(t2.toDouble()).toFloat())
-        val r1 = w * (if (isPlaying) 0.95f else 0.75f) * ripplePulse
+        val r1 = w * (if (isPlaying) 0.95f else 0.75f) * reactiveFactor
 
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(
-                    primaryColor.copy(alpha = if (isPlaying) 0.55f else 0.28f),
+                    primaryColor.copy(alpha = if (isPlaying) (0.50f + fftBass * 0.15f).coerceAtMost(0.85f) else 0.28f),
                     DeepViolet.copy(alpha = if (isPlaying) 0.35f else 0.15f),
                     Color.Transparent
                 ),
@@ -634,15 +685,15 @@ fun LiquidWaterWaveBackground(
             center = Offset(x1, y1)
         )
 
-        // Wave Layer 2: Bottom Left Aqua Whirlpool
+        // Reactive Wave 2: Bottom Left Current
         val x2 = w * (0.32f + 0.16f * sin((t1 * 1.2f).toDouble()).toFloat())
         val y2 = h * (0.72f + 0.12f * cos((t2 * 0.9f).toDouble()).toFloat())
-        val r2 = w * (if (isPlaying) 0.98f else 0.80f) * ripplePulse
+        val r2 = w * (if (isPlaying) 0.98f else 0.80f) * reactiveFactor
 
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(
-                    secondaryColor.copy(alpha = if (isPlaying) 0.42f else 0.20f),
+                    secondaryColor.copy(alpha = if (isPlaying) (0.40f + fftBass * 0.15f).coerceAtMost(0.75f) else 0.20f),
                     AquaGlow.copy(alpha = if (isPlaying) 0.22f else 0.08f),
                     Color.Transparent
                 ),
@@ -653,16 +704,16 @@ fun LiquidWaterWaveBackground(
             center = Offset(x2, y2)
         )
 
-        // Animated Harmonic Water Crest Lines
+        // Realtime Harmonic FFT Water Wave Surface
         if (isPlaying) {
             val wavePath = Path()
-            val waveHeight = 24.dp.toPx()
+            val waveHeight = (24.dp.toPx() * reactiveFactor)
             val baseline = h * 0.5f
 
             wavePath.moveTo(0f, baseline)
             var px = 0f
             while (px <= w) {
-                val py = baseline + sin((px / w * 4f * PI + t1).toDouble()).toFloat() * waveHeight * ripplePulse
+                val py = baseline + sin((px / w * 4f * PI + t1).toDouble()).toFloat() * waveHeight
                 wavePath.lineTo(px, py)
                 px += 20f
             }
@@ -673,17 +724,13 @@ fun LiquidWaterWaveBackground(
             drawPath(
                 path = wavePath,
                 brush = Brush.verticalGradient(
-                    colors = listOf(secondaryColor.copy(alpha = 0.06f), Color.Transparent)
+                    colors = listOf(secondaryColor.copy(alpha = 0.08f), Color.Transparent)
                 )
             )
         }
     }
 }
 
-/**
- * Animated iOS-style liquid mercury center orb
- * When no cover art exists, draws moving water waves with liquid refraction.
- */
 @Composable
 private fun LiquidOrbWaveformCenterpiece(
     song: Song,
@@ -693,6 +740,8 @@ private fun LiquidOrbWaveformCenterpiece(
     modifier: Modifier = Modifier
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "orb_fluid")
+    val fftBass = RealtimeFftMonitor.bassEnergy
+
     val wavePhase by infiniteTransition.animateFloat(
         initialValue = 0f, targetValue = 2f * PI.toFloat(),
         animationSpec = infiniteRepeatable(tween(if (isPlaying) 3000 else 8000, easing = LinearEasing), RepeatMode.Restart),
@@ -704,7 +753,6 @@ private fun LiquidOrbWaveformCenterpiece(
             val r = size.minDimension / 2f
             val c = center
 
-            // Outer Liquid Glass Ring
             drawCircle(
                 brush = Brush.sweepGradient(
                     listOf(secondaryColor.copy(alpha = 0.8f), primaryColor.copy(alpha = 0.8f), secondaryColor.copy(alpha = 0.8f))
@@ -714,9 +762,8 @@ private fun LiquidOrbWaveformCenterpiece(
                 style = Stroke(3.dp.toPx())
             )
 
-            // Inner Liquid Water Waves
             val wavePath = Path()
-            val amp = if (isPlaying) 16.dp.toPx() else 6.dp.toPx()
+            val amp = if (isPlaying) (16.dp.toPx() + fftBass * 18.dp.toPx()) else 6.dp.toPx()
             val waterLevel = c.y + (r * 0.15f)
 
             wavePath.moveTo(c.x - r, waterLevel)
@@ -731,7 +778,6 @@ private fun LiquidOrbWaveformCenterpiece(
             wavePath.lineTo(c.x - r, c.y + r)
             wavePath.close()
 
-            // Clip wave inside the circle
             drawContext.canvas.save()
             val circleClip = Path().apply { addOval(androidx.compose.ui.geometry.Rect(c.x - r + 4f, c.y - r + 4f, c.x + r - 4f, c.y + r - 4f)) }
             drawContext.canvas.clipPath(circleClip)
@@ -752,8 +798,69 @@ private fun LiquidOrbWaveformCenterpiece(
             drawContext.canvas.restore()
         }
 
-        // Song Thumbnail overlay if present
         SongThumb(song = song, modifier = Modifier.fillMaxSize(0.96f).clip(CircleShape))
+    }
+}
+
+/**
+ * Neon Liquid Waveform Seek Scrubber
+ */
+@Composable
+fun WaveformSeekScrubber(
+    position: Long,
+    duration: Long,
+    primaryColor: Color,
+    secondaryColor: Color,
+    onSeek: (Long) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val amplitudes = RealtimeFftMonitor.amplitudes
+    val progress = if (duration > 0) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f
+    val barCount = 38
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(48.dp)
+            .pointerInput(duration) {
+                detectTapGestures { offset ->
+                    val pct = (offset.x / size.width.toFloat()).coerceIn(0f, 1f)
+                    onSeek((pct * duration).toLong())
+                }
+            }
+            .pointerInput(duration) {
+                detectDragGestures { change, _ ->
+                    val pct = (change.position.x / size.width.toFloat()).coerceIn(0f, 1f)
+                    onSeek((pct * duration).toLong())
+                }
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(Modifier.fillMaxSize()) {
+            val barWidth = 4.dp.toPx()
+            val spacing = (size.width - (barCount * barWidth)) / (barCount - 1)
+            val midY = size.height / 2f
+
+            for (i in 0 until barCount) {
+                val amp = amplitudes[i % amplitudes.size]
+                val barHeight = (size.height * 0.85f * amp).coerceAtLeast(6.dp.toPx())
+                val x = i * (barWidth + spacing)
+                val isFilled = (i.toFloat() / barCount) <= progress
+
+                val brush = if (isFilled) {
+                    Brush.verticalGradient(listOf(secondaryColor, primaryColor))
+                } else {
+                    Brush.verticalGradient(listOf(Color(0x446B2BEE), Color(0x2253F6FF)))
+                }
+
+                drawRoundRect(
+                    brush = brush,
+                    topLeft = Offset(x, midY - barHeight / 2),
+                    size = Size(barWidth, barHeight),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(4.dp.toPx())
+                )
+            }
+        }
     }
 }
 
@@ -825,6 +932,16 @@ private fun FullPlayer(
                 .padding(horizontal = 24.dp, vertical = 14.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            // Drag handle affordance indicator
+            Box(
+                Modifier
+                    .size(width = 44.dp, height = 5.dp)
+                    .clip(CircleShape)
+                    .background(MutedLavender.copy(alpha = 0.45f))
+            )
+
+            Spacer(Modifier.height(8.dp))
+
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 BouncyIconButton(onClick = onClose) { Icon(Icons.Default.KeyboardArrowDown, null, tint = Color.White) }
                 Text("NOW PLAYING", color = MutedLavender, modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold, fontSize = 13.sp, letterSpacing = 1.sp)
@@ -834,7 +951,7 @@ private fun FullPlayer(
                 BouncyIconButton(onClick = onQueue) { Icon(Icons.Default.QueueMusic, null, tint = secondaryAccent) }
             }
 
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(8.dp))
 
             if (showLyrics) {
                 Box(
@@ -878,7 +995,6 @@ private fun FullPlayer(
                 ) {
                     var canvasCenter by remember { mutableStateOf(Offset.Zero) }
 
-                    // Glowing Radial Liquid Halo
                     Canvas(
                         Modifier
                             .size(310.dp)
@@ -902,7 +1018,6 @@ private fun FullPlayer(
                         val outerGlowWidth = 24.dp.toPx()
                         val arcSize = size.width - outerGlowWidth
 
-                        // Deep Glass Baseline Track
                         drawCircle(
                             color = Color(0x352B194E),
                             radius = arcSize / 2,
@@ -912,7 +1027,6 @@ private fun FullPlayer(
 
                         val sweepAngle = 360f * progress
                         if (sweepAngle > 0f) {
-                            // Layer 1: Ambient Neon Bloom
                             drawArc(
                                 brush = Brush.sweepGradient(
                                     listOf(
@@ -929,7 +1043,6 @@ private fun FullPlayer(
                                 style = Stroke(outerGlowWidth, cap = StrokeCap.Round)
                             )
 
-                            // Layer 2: Glossy Core Liquid Stroke
                             drawArc(
                                 brush = Brush.sweepGradient(
                                     0.0f to secondaryAccent,
@@ -944,21 +1057,17 @@ private fun FullPlayer(
                                 style = Stroke(strokeWidth, cap = StrokeCap.Round)
                             )
 
-                            // Layer 3: Head Water-Droplet Indicator
                             val angleRad = Math.toRadians((sweepAngle - 90).toDouble())
                             val radius = arcSize / 2
                             val headX = center.x + (radius * cos(angleRad)).toFloat()
                             val headY = center.y + (radius * sin(angleRad)).toFloat()
 
-                            // Outer droplet glow
                             drawCircle(color = secondaryAccent.copy(alpha = 0.6f * pulseGlow), radius = 10.dp.toPx(), center = Offset(headX, headY))
-                            // Droplet body
                             drawCircle(color = Color.White, radius = 7.dp.toPx(), center = Offset(headX, headY))
                             drawCircle(color = secondaryAccent, radius = 4.dp.toPx(), center = Offset(headX, headY))
                         }
                     }
 
-                    // Liquid Mercury Animated Centerpiece
                     LiquidOrbWaveformCenterpiece(
                         song = song,
                         isPlaying = isPlaying,
@@ -977,18 +1086,19 @@ private fun FullPlayer(
                 }
             }
 
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(12.dp))
             Text(song.title, color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Black, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(song.artist, color = MutedLavender, fontSize = 13.sp)
 
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(10.dp))
 
-            // iOS-Style Bouncy Progress Bar
-            Slider(
-                value = if (duration > 0) position.toFloat().coerceIn(0f, duration.toFloat()) else 0f,
-                onValueChange = { onSeek(it.toLong()) },
-                valueRange = 0f..duration.coerceAtLeast(1L).toFloat(),
-                colors = SliderDefaults.colors(thumbColor = secondaryAccent, activeTrackColor = primaryAccent)
+            // Waveform Seek Scrubber
+            WaveformSeekScrubber(
+                position = position,
+                duration = duration,
+                primaryColor = primaryAccent,
+                secondaryColor = secondaryAccent,
+                onSeek = onSeek
             )
 
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -998,7 +1108,6 @@ private fun FullPlayer(
 
             Spacer(Modifier.height(10.dp))
 
-            // Bottom Player Control Dock
             Row(
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceEvenly,
@@ -1010,8 +1119,7 @@ private fun FullPlayer(
                 BouncyIconButton(onClick = onPrevious) {
                     Icon(Icons.Default.SkipPrevious, null, tint = Color.White, modifier = Modifier.size(38.dp))
                 }
-                
-                // Big Bouncy Play/Pause Glass Orb
+
                 BouncyButton(
                     onClick = onPlayPause,
                     modifier = Modifier.size(72.dp)
@@ -1049,10 +1157,6 @@ private fun FullPlayer(
     }
 }
 
-/**
- * iOS Bouncy Scale Button wrapper
- * Applies fluid spring physics when pressed.
- */
 @Composable
 fun BouncyButton(
     onClick: () -> Unit,
@@ -1169,6 +1273,9 @@ private fun HomeScreen(
         songs.filter { it.id.toString() in favorites }.take(6)
     }
 
+    // Smart Auto-Playlists
+    val lastAddedSongs = remember(songs) { songs.sortedByDescending { it.dateAdded }.take(6) }
+
     Column(
         Modifier
             .fillMaxSize()
@@ -1199,6 +1306,14 @@ private fun HomeScreen(
                     Text("Artists", color = MutedLavender, fontSize = 12.sp)
                 }
             }
+        }
+
+        Spacer(Modifier.height(18.dp))
+        Text("SMART: NEWLY DISCOVERED (LAST 30 DAYS)", color = AquaGlow, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+        Spacer(Modifier.height(8.dp))
+        lastAddedSongs.forEach { song ->
+            SongCard(song, song.id.toString() in favorites, { onPlay(song) }, {}, {}, {}, {})
+            Spacer(Modifier.height(6.dp))
         }
 
         Spacer(Modifier.height(18.dp))
@@ -1692,20 +1807,24 @@ private fun SongThumb(song: Song, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun TagEditorDialog(
+private fun TagEditorAndCoverDialog(
     song: Song,
     onDismiss: () -> Unit,
-    onSave: (String, String) -> Unit
+    onSave: (String, String, String?) -> Unit
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var title by remember { mutableStateOf(song.title) }
     var artist by remember { mutableStateOf(song.artist) }
+    var onlineCoverUri by remember { mutableStateOf<String?>(null) }
+    var isSearchingCover by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = Color(0xFF1E1436),
-        title = { Text("Edit Song Metadata", color = Color.White) },
+        title = { Text("Song Metadata & Cover Art", color = Color.White) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 OutlinedTextField(
                     value = title,
                     onValueChange = { title = it },
@@ -1718,10 +1837,33 @@ private fun TagEditorDialog(
                     label = { Text("Artist Name", color = MutedLavender) },
                     colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White)
                 )
+
+                Button(
+                    onClick = {
+                        scope.launch {
+                            isSearchingCover = true
+                            val url = ArtworkScraper.searchCoverArtUrl("$title $artist")
+                            if (url != null) {
+                                onlineCoverUri = ArtworkScraper.saveDownloadedCoverToFile(context, song, url)
+                            }
+                            isSearchingCover = false
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = DeepViolet),
+                    enabled = !isSearchingCover
+                ) {
+                    Icon(Icons.Default.ImageSearch, null)
+                    Spacer(Modifier.width(6.dp))
+                    Text(if (isSearchingCover) "Fetching Cover..." else "Scrape HD Cover Online")
+                }
+
+                if (onlineCoverUri != null) {
+                    Text("✓ New Cover Art Linked", color = ElectricCyan, fontSize = 12.sp)
+                }
             }
         },
         confirmButton = {
-            TextButton(onClick = { onSave(title.trim(), artist.trim()) }) {
+            TextButton(onClick = { onSave(title.trim(), artist.trim(), onlineCoverUri) }) {
                 Text("Save", color = ElectricCyan)
             }
         },
@@ -1737,15 +1879,10 @@ private fun MiniVisualizer(
     accent2: Color = NeonPurple,
     modifier: Modifier = Modifier
 ) {
-    val transition = rememberInfiniteTransition(label = "visualizer")
+    val amplitudes = RealtimeFftMonitor.amplitudes
     Row(modifier, horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically) {
-        repeat(20) { i ->
-            val h by transition.animateFloat(
-                initialValue = 4f,
-                targetValue = (12 + (i * 9 % 24)).toFloat(),
-                animationSpec = infiniteRepeatable(tween(260 + i * 18, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-                label = "bar$i"
-            )
+        for (i in 0 until 16) {
+            val h = (amplitudes[i] * 24.dp.value).coerceIn(4f, 26f)
             Box(Modifier.width(3.dp).height(h.dp).clip(CircleShape).background(Brush.verticalGradient(listOf(accent1, accent2))))
         }
     }
@@ -1896,7 +2033,7 @@ private fun SettingsScreen(
         }
 
         Spacer(Modifier.height(20.dp))
-        Text("SONIQ v0.3.0 • Liquid Water Acoustics", color = MutedLavender.copy(alpha = 0.5f), fontSize = 11.sp)
+        Text("SONIQ v0.4.0 • Master Edition", color = MutedLavender.copy(alpha = 0.5f), fontSize = 11.sp)
     }
 }
 
