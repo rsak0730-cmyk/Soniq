@@ -45,6 +45,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -123,7 +124,6 @@ fun SoniqApp() {
     var selectedFilterKey by remember { mutableStateOf<String?>(null) }
     var playerOffsetY by remember { mutableFloatStateOf(0f) }
 
-    // Liquid Gyroscope Parallax Engine
     val gyroEngine = remember { GyroscopeParallaxEngine(context) }
     DisposableEffect(Unit) {
         gyroEngine.start()
@@ -154,7 +154,6 @@ fun SoniqApp() {
         duration = song.durationMs
         position = 0L
 
-        // Record play event into Sonic Stats Heatmap
         SonicStatsEngine.recordPlayEvent(song)
 
         recents = (recents + song.id.toString()).toList().takeLast(30).toSet()
@@ -163,7 +162,6 @@ fun SoniqApp() {
     }
 
     fun launchPartyMode() {
-        // Launches Bluetooth Audio Sharing / Samsung Dual Audio
         try {
             val intent = Intent("com.samsung.android.settings.BLUETOOTH_CASTING_SETTINGS").apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
@@ -256,7 +254,6 @@ fun SoniqApp() {
         }
     }
 
-    // Bubbly Ripple Touch Physics (Water Droplet Splashes)
     FluidTouchCanvas(rippleColor = dynamicSecondaryColor) {
         Box(Modifier.fillMaxSize()) {
             LiquidWaterWaveBackground(
@@ -291,7 +288,6 @@ fun SoniqApp() {
                         Text("Liquid Gyro Acoustics • Party Sync", color = MutedLavender, fontSize = 11.sp)
                     }
 
-                    // Dual Audio Party Mode Quick Toggle
                     BouncyIconButton(onClick = { launchPartyMode() }) {
                         Icon(Icons.Default.Headphones, contentDescription = "Dual Headphone Party Share", tint = dynamicSecondaryColor)
                     }
@@ -303,7 +299,6 @@ fun SoniqApp() {
                     }
                 }
 
-                // Frosted Glass Search Bar
                 OutlinedTextField(
                     value = query,
                     onValueChange = {
@@ -408,7 +403,6 @@ fun SoniqApp() {
                 }
             }
 
-            // Bottom Navigation Bar
             Box(
                 Modifier
                     .align(Alignment.BottomCenter)
@@ -422,7 +416,6 @@ fun SoniqApp() {
                 )
             }
 
-            // Full Screen Player with Liquid Gyroscope Parallax
             if (showPlayer && currentSong != null) {
                 val animatedOffsetY by animateFloatAsState(
                     targetValue = playerOffsetY,
@@ -477,7 +470,6 @@ fun SoniqApp() {
                 }
             }
 
-            // Create Album Dialog
             if (showCreateAlbum) {
                 AlertDialog(
                     onDismissRequest = { showCreateAlbum = false },
@@ -548,7 +540,6 @@ fun SoniqApp() {
                 )
             }
 
-            // Tag Editor & Audio Fingerprint Auto-Fixer Dialog
             editTagSong?.let { song ->
                 TagEditorAndFingerprintDialog(
                     song = song,
@@ -598,7 +589,6 @@ fun LiquidWaterWaveBackground(
         drawRect(OLEDBlack)
         val reactiveFactor = if (isPlaying) 1f + (fftBass * 0.45f) else 1f
 
-        // Apply Gyroscope Parallax shift
         val gyroShiftX = roll * 45.dp.toPx()
         val gyroShiftY = pitch * 45.dp.toPx()
 
@@ -698,7 +688,7 @@ private fun LiquidOrbWaveformCenterpiece(
                 ),
                 radius = r - 2.dp.toPx(),
                 center = c,
-                style = Stroke(3.dp.toPx())
+                style = Stroke(2.5.dp.toPx())
             )
 
             val wavePath = Path()
@@ -852,6 +842,7 @@ private fun FullPlayer(
         label = "timeline_wave_phase"
     )
     val fftBass = RealtimeFftMonitor.bassEnergy
+    val density = LocalDensity.current
 
     Box(
         Modifier
@@ -886,7 +877,6 @@ private fun FullPlayer(
                 BouncyIconButton(onClick = onClose) { Icon(Icons.Default.KeyboardArrowDown, null, tint = Color.White) }
                 Text("NOW PLAYING", color = MutedLavender, modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold, fontSize = 13.sp, letterSpacing = 1.sp)
 
-                // Party Mode quick launch
                 BouncyIconButton(onClick = onLaunchParty) {
                     Icon(Icons.Default.Headphones, contentDescription = "Dual Headphone Share", tint = secondaryAccent)
                 }
@@ -940,41 +930,79 @@ private fun FullPlayer(
                     contentAlignment = Alignment.Center
                 ) {
                     var canvasCenter by remember { mutableStateOf(Offset.Zero) }
+                    var baseRadiusPx by remember { mutableFloatStateOf(0f) }
+                    var isDraggingSeeker by remember { mutableStateOf(false) }
+
+                    // Seek gesture boundary check: only scrub if touch lands directly on the ring edge
+                    val touchZoneTolerancePx = with(density) { 32.dp.toPx() }
+
                     Canvas(
                         Modifier
                             .size(310.dp)
                             .pointerInput(duration) {
-                                detectDragGestures { change: PointerInputChange, _ ->
-                                    val touch = change.position
-                                    val dx = touch.x - canvasCenter.x
-                                    val dy = touch.y - canvasCenter.y
-                                    var angle = Math.toDegrees(atan2(dy.toDouble(), dx.toDouble())).toFloat() + 90f
-                                    if (angle < 0) angle += 360f
-                                    val seekPercent = (angle / 360f).coerceIn(0f, 1f)
-                                    val targetMs = (seekPercent * duration).toLong()
-                                    onSeek(targetMs)
-                                    view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                detectTapGestures { tapOffset ->
+                                    val dx = tapOffset.x - canvasCenter.x
+                                    val dy = tapOffset.y - canvasCenter.y
+                                    val dist = hypot(dx, dy)
+                                    // Verify touch landed strictly on the outer circular track
+                                    if (abs(dist - baseRadiusPx) <= touchZoneTolerancePx && duration > 0) {
+                                        var angle = Math.toDegrees(atan2(dy.toDouble(), dx.toDouble())).toFloat() + 90f
+                                        if (angle < 0) angle += 360f
+                                        val seekPercent = (angle / 360f).coerceIn(0f, 1f)
+                                        onSeek((seekPercent * duration).toLong())
+                                        view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                    }
                                 }
+                            }
+                            .pointerInput(duration) {
+                                detectDragGestures(
+                                    onDragStart = { startOffset ->
+                                        val dx = startOffset.x - canvasCenter.x
+                                        val dy = startOffset.y - canvasCenter.y
+                                        val dist = hypot(dx, dy)
+                                        isDraggingSeeker = abs(dist - baseRadiusPx) <= touchZoneTolerancePx
+                                    },
+                                    onDragEnd = { isDraggingSeeker = false },
+                                    onDragCancel = { isDraggingSeeker = false },
+                                    onDrag = { change: PointerInputChange, _ ->
+                                        if (isDraggingSeeker && duration > 0) {
+                                            change.consume()
+                                            val touch = change.position
+                                            val dx = touch.x - canvasCenter.x
+                                            val dy = touch.y - canvasCenter.y
+                                            var angle = Math.toDegrees(atan2(dy.toDouble(), dx.toDouble())).toFloat() + 90f
+                                            if (angle < 0) angle += 360f
+                                            val seekPercent = (angle / 360f).coerceIn(0f, 1f)
+                                            val targetMs = (seekPercent * duration).toLong()
+                                            onSeek(targetMs)
+                                            view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                        }
+                                    }
+                                )
                             }
                     ) {
                         canvasCenter = center
-                        val strokeWidth = 10.dp.toPx()
-                        val outerGlowWidth = 22.dp.toPx()
-                        val baseRadius = (size.width - outerGlowWidth) / 2f
+                        // Streamlined dimensions for a thin, premium aesthetic
+                        val strokeWidth = 3.5.dp.toPx()
+                        val outerGlowWidth = 8.dp.toPx()
+                        val baseRadius = (size.width - 24.dp.toPx()) / 2f
+                        baseRadiusPx = baseRadius
 
+                        // Background subtle guideline track
                         drawCircle(
                             color = Color(0x352B194E),
                             radius = baseRadius,
                             center = center,
-                            style = Stroke(strokeWidth, cap = StrokeCap.Round)
+                            style = Stroke(2.dp.toPx(), cap = StrokeCap.Round)
                         )
 
                         val sweepAngle = 360f * progress
                         if (sweepAngle > 0f) {
                             val wavePath = Path()
                             val steps = (sweepAngle * 1.5f).toInt().coerceAtLeast(8)
-                            val waveAmplitude = if (isPlaying) (3.5.dp.toPx() + fftBass * 6.5.dp.toPx()) else 1.5.dp.toPx()
-                            val waveFreq = 8.0
+                            // Subtle liquid undulation instead of huge offsets
+                            val waveAmplitude = if (isPlaying) (1.2.dp.toPx() + fftBass * 1.8.dp.toPx()) else 0.8.dp.toPx()
+                            val waveFreq = 10.0
                             var tipX = center.x
                             var tipY = center.y
 
@@ -992,18 +1020,20 @@ private fun FullPlayer(
                                 }
                             }
 
+                            // Thin delicate ambient bloom
                             drawPath(
                                 path = wavePath,
                                 brush = Brush.sweepGradient(
                                     listOf(
-                                        primaryAccent.copy(alpha = 0.45f * pulseGlow),
-                                        secondaryAccent.copy(alpha = 0.65f * pulseGlow),
-                                        primaryAccent.copy(alpha = 0.45f * pulseGlow)
+                                        primaryAccent.copy(alpha = 0.25f * pulseGlow),
+                                        secondaryAccent.copy(alpha = 0.35f * pulseGlow),
+                                        primaryAccent.copy(alpha = 0.25f * pulseGlow)
                                     )
                                 ),
                                 style = Stroke(outerGlowWidth, cap = StrokeCap.Round, join = StrokeJoin.Round)
                             )
 
+                            // Thin core liquid arc
                             drawPath(
                                 path = wavePath,
                                 brush = Brush.sweepGradient(
@@ -1014,14 +1044,14 @@ private fun FullPlayer(
                                 style = Stroke(strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round)
                             )
 
-                            val dropletRadius = (5.dp.toPx() + fftBass * 3.dp.toPx())
-                            drawCircle(color = secondaryAccent.copy(alpha = 0.6f * pulseGlow), radius = dropletRadius + 4.dp.toPx(), center = Offset(tipX, tipY))
+                            // Sleek pearl tip indicator
+                            val dropletRadius = (3.5.dp.toPx() + fftBass * 1.5.dp.toPx())
+                            drawCircle(color = secondaryAccent.copy(alpha = 0.4f * pulseGlow), radius = dropletRadius + 3.dp.toPx(), center = Offset(tipX, tipY))
                             drawCircle(color = Color.White, radius = dropletRadius, center = Offset(tipX, tipY))
-                            drawCircle(color = secondaryAccent, radius = (dropletRadius * 0.6f), center = Offset(tipX, tipY))
+                            drawCircle(color = secondaryAccent, radius = (dropletRadius * 0.5f), center = Offset(tipX, tipY))
                         }
                     }
 
-                    // Gyroscope 3D Parallax Orb
                     LiquidOrbWaveformCenterpiece(
                         song = song,
                         isPlaying = isPlaying,
@@ -1257,7 +1287,6 @@ private fun HomeScreen(
 
         Spacer(Modifier.height(18.dp))
 
-        // Sonic Heatmap Preview on Home Screen
         SonicHeatmapView()
 
         Spacer(Modifier.height(18.dp))
@@ -1740,9 +1769,6 @@ private fun SongThumb(song: Song, modifier: Modifier = Modifier) {
     }
 }
 
-/**
- * Metadata Editor + "Audio Fingerprint" Auto-Fixer Dialog
- */
 @Composable
 private fun TagEditorAndFingerprintDialog(
     song: Song,
@@ -1789,7 +1815,6 @@ private fun TagEditorAndFingerprintDialog(
                     colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White)
                 )
 
-                // AUTO-FIX TRIGGER BUTTON
                 Button(
                     onClick = {
                         scope.launch {
@@ -1865,7 +1890,6 @@ private fun SettingsScreen(
 
         Spacer(Modifier.height(14.dp))
 
-        // DUAL HEADPHONE AUDIO SHARE (PARTY MODE)
         Surface(
             color = GlassPill,
             shape = RoundedCornerShape(20.dp),
