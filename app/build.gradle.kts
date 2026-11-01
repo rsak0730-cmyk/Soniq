@@ -12,8 +12,8 @@ android {
         applicationId = "com.soniq.player"
         minSdk = 29
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.3.0"
+        versionCode = 4
+        versionName = "0.4.0"
     }
 
     buildFeatures {
@@ -40,11 +40,9 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.0")
     implementation("androidx.palette:palette-ktx:1.0.0")
-
     implementation("androidx.media3:media3-exoplayer:1.6.1")
     implementation("androidx.media3:media3-session:1.6.1")
     implementation("com.google.guava:guava:33.4.8-android")
     implementation("io.coil-kt:coil-compose:2.7.0")
-
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
