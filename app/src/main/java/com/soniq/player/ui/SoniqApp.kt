@@ -6,6 +6,9 @@
 package com.soniq.player.ui
 
 import android.content.ComponentName
+import android.graphics.BitmapFactory
+import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
@@ -22,11 +25,14 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.*
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -37,15 +43,19 @@ import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.google.common.util.concurrent.MoreExecutors
 import com.soniq.player.audio.AudioDeviceMonitor
 import com.soniq.player.audio.AudioOutput
 import com.soniq.player.data.MusicRepository
 import com.soniq.player.data.Song
 import com.soniq.player.playback.PlaybackService
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlin.math.roundToInt
+import kotlinx.coroutines.withContext
+import kotlin.math.cos
+import kotlin.math.sin
 
 private val DeepBlack = Color(0xFF080711)
 private val Purple = Color(0xFF9B6CFF)
@@ -66,7 +76,6 @@ enum class MainTab(val label: String, val icon: ImageVector) {
 @Composable
 fun SoniqApp() {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     val prefs = remember { context.getSharedPreferences("soniq_user_data", 0) }
 
     var songs by remember { mutableStateOf(emptyList<Song>()) }
@@ -101,6 +110,12 @@ fun SoniqApp() {
     var libraryMode by remember { mutableStateOf("Songs") }
     val listState = rememberLazyListState()
 
+    var selectedFilterKey by remember { mutableStateOf<String?>(null) }
+
+    BackHandler(enabled = showPlayer || selectedFilterKey != null) {
+        if (showPlayer) showPlayer = false else selectedFilterKey = null
+    }
+
     fun saveFavorites() { prefs.edit().putStringSet("favorites", favorites).apply() }
     fun saveRecents() { prefs.edit().putStringSet("recents", recents).apply() }
 
@@ -111,7 +126,7 @@ fun SoniqApp() {
         c.setMediaItems(queue.map { s ->
             MediaItem.Builder().setUri(s.uri).setMediaMetadata(
                 MediaMetadata.Builder().setTitle(s.title).setArtist(s.artist)
-                    .setAlbumTitle(s.album).setArtworkUri(s.albumArtUri?.let(android.net.Uri::parse)).build()
+                    .setAlbumTitle(s.album).setArtworkUri(s.albumArtUri?.let(Uri::parse)).build()
             ).build()
         }, index, 0L)
         c.prepare()
@@ -166,7 +181,7 @@ fun SoniqApp() {
                     currentSong = songs.firstOrNull { it.title == title }
                 }
             }
-            delay(350)
+            delay(300)
         }
     }
 
@@ -183,25 +198,7 @@ fun SoniqApp() {
         }
     }
 
-    val filtered = remember(songs, query) {
-        if (query.isBlank()) songs else songs.filter {
-            it.title.contains(query, true) || it.artist.contains(query, true) ||
-                    it.album.contains(query, true) || it.folder.contains(query, true)
-        }
-    }
-
-    val displayedSongs = when (libraryMode) {
-        "Artists" -> filtered.filter { it.artist.contains(query, true) || query.isBlank() }
-        "Albums" -> filtered.filter { it.album.contains(query, true) || query.isBlank() }
-        "Folders" -> filtered.filter { it.folder.contains(query, true) }
-        "Favorites" -> filtered.filter { it.id.toString() in favorites }
-        "Recent" -> filtered.sortedByDescending { if (it.id.toString() in recents) recents.indexOf(it.id.toString()) else -1 }
-        "Playlist" -> filtered.filter { it.id.toString() in playlistSongs }
-        else -> filtered
-    }
-
     Box(Modifier.fillMaxSize().background(DeepBlack)) {
-        // Liquid Water-Shimmer Background
         val shimmerTrans = rememberInfiniteTransition(label = "shimmer")
         val phase by shimmerTrans.animateFloat(
             initialValue = 0f,
@@ -241,7 +238,6 @@ fun SoniqApp() {
             }
         }
 
-        // Main Content Area
         Column(
             Modifier
                 .fillMaxSize()
@@ -249,7 +245,6 @@ fun SoniqApp() {
                 .padding(bottom = 86.dp)
                 .padding(horizontal = 16.dp)
         ) {
-            // Header Bar
             Row(
                 modifier = Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -265,7 +260,6 @@ fun SoniqApp() {
                 }
             }
 
-            // Glass Search Bar
             OutlinedTextField(
                 value = query,
                 onValueChange = {
@@ -298,7 +292,6 @@ fun SoniqApp() {
 
             Spacer(Modifier.height(10.dp))
 
-            // Tab Content Frame
             AnimatedContent(
                 targetState = currentTab,
                 transitionSpec = { fadeIn(tween(250)) togetherWith fadeOut(tween(200)) },
@@ -313,13 +306,20 @@ fun SoniqApp() {
                         onNavigateLibrary = { currentTab = MainTab.LIBRARY }
                     )
                     MainTab.LIBRARY -> LibraryScreen(
-                        songs = displayedSongs,
                         allSongs = songs,
                         mode = libraryMode,
-                        onMode = { libraryMode = it },
+                        onMode = {
+                            libraryMode = it
+                            selectedFilterKey = null
+                        },
+                        filterKey = selectedFilterKey,
+                        onFilterKey = { selectedFilterKey = it },
+                        query = query,
                         listState = listState,
                         favorites = favorites,
-                        onPlay = { playSong(it, displayedSongs) },
+                        recents = recents,
+                        playlistSongs = playlistSongs,
+                        onPlay = { song, list -> playSong(song, list) },
                         onFavorite = { song ->
                             favorites = if (song.id.toString() in favorites) favorites - song.id.toString()
                             else favorites + song.id.toString()
@@ -338,6 +338,7 @@ fun SoniqApp() {
                             selectedPlaylist = it
                             playlistSongs = prefs.getString("playlist_$it", "")?.split("|")?.filter(String::isNotBlank)?.toSet() ?: emptySet()
                             libraryMode = "Playlist"
+                            selectedFilterKey = null
                             currentTab = MainTab.LIBRARY
                         },
                         onCreate = { showCreatePlaylist = true },
@@ -359,7 +360,6 @@ fun SoniqApp() {
             }
         }
 
-        // Floating Sticky Glass Bottom Navigation Bar
         FloatingBottomNavBar(
             currentTab = currentTab,
             onSelect = { currentTab = it },
@@ -369,7 +369,7 @@ fun SoniqApp() {
                 .padding(horizontal = 18.dp, vertical = 12.dp)
         )
 
-        // Full Screen Player Overlay
+        // Full Screen Player with isolated pointer interception (Blocks ghost clicks to underlayer)
         if (showPlayer && currentSong != null) {
             FullPlayer(
                 song = currentSong!!,
@@ -396,7 +396,6 @@ fun SoniqApp() {
             )
         }
 
-        // Playlist Dialogs
         if (showCreatePlaylist) {
             AlertDialog(
                 onDismissRequest = { showCreatePlaylist = false },
@@ -547,7 +546,6 @@ private fun HomeScreen(
             .verticalScroll(rememberScrollState())
             .padding(vertical = 12.dp)
     ) {
-        // Quick Stats Glass Card
         Surface(
             color = GlassSurface,
             shape = RoundedCornerShape(24.dp),
@@ -604,24 +602,60 @@ private fun HomeScreen(
 
 @Composable
 private fun LibraryScreen(
-    songs: List<Song>,
     allSongs: List<Song>,
     mode: String,
     onMode: (String) -> Unit,
+    filterKey: String?,
+    onFilterKey: (String?) -> Unit,
+    query: String,
     listState: LazyListState,
     favorites: Set<String>,
-    onPlay: (Song) -> Unit,
+    recents: Set<String>,
+    playlistSongs: Set<String>,
+    onPlay: (Song, List<Song>) -> Unit,
     onFavorite: (Song) -> Unit,
     onAdd: (Song) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val artistGroups = remember(allSongs) {
+        allSongs.groupBy { it.artist }.toList().sortedBy { it.first.lowercase() }
+    }
+    val albumGroups = remember(allSongs) {
+        allSongs.groupBy { it.album }.toList().sortedBy { it.first.lowercase() }
+    }
+    val folderGroups = remember(allSongs) {
+        allSongs.groupBy { it.folder }.toList().sortedBy { it.first.lowercase() }
+    }
+
+    val songsToDisplay = remember(allSongs, mode, filterKey, query, favorites, recents, playlistSongs) {
+        val base = when {
+            filterKey != null -> {
+                when (mode) {
+                    "Artists" -> allSongs.filter { it.artist == filterKey }
+                    "Albums" -> allSongs.filter { it.album == filterKey }
+                    "Folders" -> allSongs.filter { it.folder == filterKey }
+                    else -> allSongs
+                }
+            }
+            mode == "Favorites" -> allSongs.filter { it.id.toString() in favorites }
+            mode == "Recent" -> allSongs.sortedByDescending { if (it.id.toString() in recents) recents.indexOf(it.id.toString()) else -1 }
+            mode == "Playlist" -> allSongs.filter { it.id.toString() in playlistSongs }
+            else -> allSongs
+        }
+
+        if (query.isBlank()) base else base.filter {
+            it.title.contains(query, true) || it.artist.contains(query, true) ||
+            it.album.contains(query, true) || it.folder.contains(query, true)
+        }
+    }
+
     Column(modifier) {
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf("Songs", "Artists", "Albums", "Folders", "Favorites", "Recent", "Playlist").forEach {
+            listOf("Songs", "Artists", "Albums", "Folders", "Favorites", "Recent", "Playlist").forEach { item ->
                 FilterChip(
-                    selected = mode == it,
-                    onClick = { onMode(it) },
-                    label = { Text(it) },
+                    selected = mode == item,
+                    onClick = { onMode(item) },
+                    label = { Text(item) },
                     colors = FilterChipDefaults.filterChipColors(
                         selectedContainerColor = Purple.copy(alpha = 0.35f),
                         selectedLabelColor = Cyan,
@@ -631,46 +665,165 @@ private fun LibraryScreen(
             }
         }
 
-        Text(
-            "${songs.size} TRACKS • ${allSongs.size} IN REPOSITORY",
-            color = MutedLavender,
-            fontSize = 11.sp,
-            modifier = Modifier.padding(vertical = 7.dp)
-        )
-
-        if (songs.isEmpty()) {
-            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                Text(
-                    if (allSongs.isEmpty()) "No local music found. Grant audio permission."
-                    else "No matching tracks in this view.",
-                    color = MutedLavender
-                )
+        if (filterKey != null) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp)
+                    .clickable { onFilterKey(null) }
+            ) {
+                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Cyan, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(filterKey, color = Cyan, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                Spacer(Modifier.width(6.dp))
+                Text("(${songsToDisplay.size} tracks)", color = MutedLavender, fontSize = 12.sp)
             }
         } else {
-            Row(Modifier.weight(1f)) {
+            val countText = when (mode) {
+                "Artists" -> "${artistGroups.size} ARTISTS"
+                "Albums" -> "${albumGroups.size} ALBUMS"
+                "Folders" -> "${folderGroups.size} FOLDERS"
+                else -> "${songsToDisplay.size} TRACKS • ${allSongs.size} IN REPOSITORY"
+            }
+            Text(
+                countText,
+                color = MutedLavender,
+                fontSize = 11.sp,
+                modifier = Modifier.padding(vertical = 7.dp)
+            )
+        }
+
+        when {
+            filterKey == null && mode == "Artists" -> {
+                val filteredArtists = remember(artistGroups, query) {
+                    if (query.isBlank()) artistGroups else artistGroups.filter { it.first.contains(query, true) }
+                }
                 LazyColumn(
-                    Modifier.weight(1f),
-                    state = listState,
+                    modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(songs, key = { it.id }) { song ->
-                        SongCard(
-                            song = song,
-                            favorite = song.id.toString() in favorites,
-                            onPlay = { onPlay(song) },
-                            onFavorite = { onFavorite(song) },
-                            onAdd = { onAdd(song) }
+                    items(filteredArtists, key = { it.first }) { (artist, songList) ->
+                        GroupCard(
+                            title = artist,
+                            subtitle = "${songList.size} Tracks",
+                            icon = Icons.Default.Person,
+                            representativeSong = songList.firstOrNull(),
+                            onClick = { onFilterKey(artist) }
                         )
                     }
                 }
-
-                // Samsung-Style Draggable Alphabet Quick-Scroller
-                SamsungAlphabetScroller(
-                    songs = songs,
-                    listState = listState,
-                    modifier = Modifier.padding(start = 4.dp)
-                )
             }
+
+            filterKey == null && mode == "Albums" -> {
+                val filteredAlbums = remember(albumGroups, query) {
+                    if (query.isBlank()) albumGroups else albumGroups.filter { it.first.contains(query, true) }
+                }
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(filteredAlbums, key = { it.first }) { (album, songList) ->
+                        GroupCard(
+                            title = album,
+                            subtitle = "${songList.firstOrNull()?.artist ?: "Unknown Artist"} • ${songList.size} Tracks",
+                            icon = Icons.Default.Album,
+                            representativeSong = songList.firstOrNull(),
+                            onClick = { onFilterKey(album) }
+                        )
+                    }
+                }
+            }
+
+            filterKey == null && mode == "Folders" -> {
+                val filteredFolders = remember(folderGroups, query) {
+                    if (query.isBlank()) folderGroups else folderGroups.filter { it.first.contains(query, true) }
+                }
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(filteredFolders, key = { it.first }) { (folder, songList) ->
+                        GroupCard(
+                            title = folder,
+                            subtitle = "${songList.size} Tracks",
+                            icon = Icons.Default.Folder,
+                            representativeSong = null,
+                            onClick = { onFilterKey(folder) }
+                        )
+                    }
+                }
+            }
+
+            else -> {
+                if (songsToDisplay.isEmpty()) {
+                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        Text("No matching tracks in this view.", color = MutedLavender)
+                    }
+                } else {
+                    Row(Modifier.weight(1f)) {
+                        LazyColumn(
+                            Modifier.weight(1f),
+                            state = listState,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(songsToDisplay, key = { it.id }) { song ->
+                                SongCard(
+                                    song = song,
+                                    favorite = song.id.toString() in favorites,
+                                    onPlay = { onPlay(song, songsToDisplay) },
+                                    onFavorite = { onFavorite(song) },
+                                    onAdd = { onAdd(song) }
+                                )
+                            }
+                        }
+
+                        SamsungAlphabetScroller(
+                            songs = songsToDisplay,
+                            listState = listState,
+                            modifier = Modifier.padding(start = 6.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun GroupCard(
+    title: String,
+    subtitle: String,
+    icon: ImageVector,
+    representativeSong: Song?,
+    onClick: () -> Unit
+) {
+    Surface(
+        color = GlassSurface,
+        shape = RoundedCornerShape(18.dp),
+        border = BorderStroke(1.dp, GlassBorder),
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)
+    ) {
+        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (representativeSong != null) {
+                SongThumb(song = representativeSong, modifier = Modifier.size(48.dp))
+            } else {
+                Box(
+                    Modifier
+                        .size(48.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Brush.linearGradient(listOf(Purple.copy(alpha = 0.5f), Cyan.copy(alpha = 0.5f)))),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(icon, null, tint = Color.White)
+                }
+            }
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(subtitle, color = MutedLavender, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Icon(Icons.Default.ChevronRight, null, tint = Cyan)
         }
     }
 }
@@ -699,7 +852,7 @@ private fun SamsungAlphabetScroller(
     Box(
         modifier = modifier
             .fillMaxHeight()
-            .width(36.dp)
+            .width(28.dp)
             .onGloballyPositioned { railHeightPx = it.size.height.toFloat() }
             .pointerInput(alphabet, songs) {
                 detectTapGestures(
@@ -747,13 +900,12 @@ private fun SamsungAlphabetScroller(
             }
         }
 
-        // Bubbly Floating Magnifier Badge
         activeLetter?.let { letter ->
             Box(
                 modifier = Modifier
                     .align(Alignment.CenterStart)
-                    .offset(x = (-42).dp)
-                    .size(52.dp)
+                    .offset(x = (-46).dp)
+                    .size(48.dp)
                     .clip(CircleShape)
                     .background(Brush.radialGradient(listOf(Cyan, Purple)))
                     .border(2.dp, Color.White, CircleShape),
@@ -762,7 +914,7 @@ private fun SamsungAlphabetScroller(
                 Text(
                     text = letter.toString(),
                     color = DeepBlack,
-                    fontSize = 24.sp,
+                    fontSize = 22.sp,
                     fontWeight = FontWeight.Black
                 )
             }
@@ -785,7 +937,7 @@ private fun SongCard(
         modifier = Modifier.fillMaxWidth().clickable { onPlay() }
     ) {
         Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-            AlbumThumb(song.albumArtUri, Modifier.size(50.dp))
+            SongThumb(song, Modifier.size(50.dp))
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(song.title, color = Color.White, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -806,13 +958,49 @@ private fun SongCard(
     }
 }
 
+/**
+ * Enhanced Thumbnail loader:
+ * 1. Tries MediaStore Album Art.
+ * 2. If null or Vidmate downloaded mp3, loads embedded picture via MediaMetadataRetriever in background.
+ */
 @Composable
-private fun AlbumThumb(uri: String?, modifier: Modifier = Modifier) {
-    if (uri != null) {
-        AsyncImage(model = uri, contentDescription = "Artwork", modifier = modifier.clip(RoundedCornerShape(14.dp)))
+private fun SongThumb(song: Song, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    var embeddedBitmap by remember(song.id) { mutableStateOf<ImageBitmap?>(null) }
+
+    LaunchedEffect(song.id) {
+        withContext(Dispatchers.IO) {
+            val bytes = MusicRepository.extractEmbeddedPicture(context, song.uri)
+            if (bytes != null) {
+                val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                if (bmp != null) {
+                    embeddedBitmap = bmp.asImageBitmap()
+                }
+            }
+        }
+    }
+
+    if (embeddedBitmap != null) {
+        Image(
+            bitmap = embeddedBitmap!!,
+            contentDescription = "Artwork",
+            contentScale = ContentScale.Crop,
+            modifier = modifier.clip(RoundedCornerShape(14.dp))
+        )
+    } else if (!song.albumArtUri.isNullOrBlank()) {
+        AsyncImage(
+            model = ImageRequest.Builder(context)
+                .data(song.albumArtUri)
+                .crossfade(true)
+                .build(),
+            contentDescription = "Artwork",
+            contentScale = ContentScale.Crop,
+            modifier = modifier.clip(RoundedCornerShape(14.dp))
+        )
     } else {
         Box(
-            modifier.background(Brush.linearGradient(listOf(Purple, Cyan)), RoundedCornerShape(14.dp)),
+            modifier = modifier
+                .background(Brush.linearGradient(listOf(Purple, Cyan)), RoundedCornerShape(14.dp)),
             contentAlignment = Alignment.Center
         ) {
             Icon(Icons.Default.MusicNote, null, tint = Color.White)
@@ -837,15 +1025,33 @@ private fun FullPlayer(
     onRepeat: () -> Unit,
     onQueue: () -> Unit
 ) {
-    val animatedProgress = if (duration > 0) position.toFloat() / duration else 0f
+    val progress = if (duration > 0) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f
 
-    Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0xFF1B112D), DeepBlack)))) {
+    // Animated glow pulse for the circular timeline
+    val infiniteTransition = rememberInfiniteTransition(label = "player_liquid")
+    val pulseGlow by infiniteTransition.animateFloat(
+        initialValue = 0.7f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(tween(2000, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+        label = "glow"
+    )
+
+    // Intercept clicks completely so no background elements get touched
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Brush.verticalGradient(listOf(Color(0xFF140D22), DeepBlack)))
+            .pointerInput(Unit) {
+                // Absorbs all touch gestures from passing underneath
+                detectTapGestures { }
+            }
+    ) {
         Column(
             Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
-                .padding(24.dp),
+                .padding(horizontal = 24.dp, vertical = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -854,28 +1060,96 @@ private fun FullPlayer(
                 IconButton(onClick = onQueue) { Icon(Icons.Default.QueueMusic, null, tint = Cyan) }
             }
 
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(16.dp))
 
+            // Liquid Circular Timeline & Visual Centerpiece
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                Canvas(Modifier.size(280.dp)) {
-                    drawCircle(Cyan.copy(alpha = 0.12f), style = androidx.compose.ui.graphics.drawscope.Stroke(4.dp.toPx()))
-                    drawArc(
-                        brush = Brush.sweepGradient(listOf(Purple, Cyan, Purple)),
-                        startAngle = -90f,
-                        sweepAngle = 360f * animatedProgress,
-                        useCenter = false,
-                        style = androidx.compose.ui.graphics.drawscope.Stroke(8.dp.toPx(), cap = StrokeCap.Round)
+                Canvas(Modifier.size(285.dp)) {
+                    val strokeWidth = 9.dp.toPx()
+                    val outerGlowWidth = 18.dp.toPx()
+                    val arcSize = size.width - outerGlowWidth
+
+                    // Inactive Background Track (Glossy dark glass ring)
+                    drawCircle(
+                        color = Color(0x334E3577),
+                        radius = arcSize / 2,
+                        center = center,
+                        style = Stroke(strokeWidth, cap = StrokeCap.Round)
                     )
+
+                    // Active Glowing Liquid Timeline Arc
+                    val sweepAngle = 360f * progress
+                    if (sweepAngle > 0f) {
+                        // Ambient Outer Bloom
+                        drawArc(
+                            brush = Brush.sweepGradient(
+                                listOf(VioletGlow.copy(alpha = 0.35f * pulseGlow), Cyan.copy(alpha = 0.5f * pulseGlow), VioletGlow.copy(alpha = 0.35f * pulseGlow))
+                            ),
+                            startAngle = -90f,
+                            sweepAngle = sweepAngle,
+                            useCenter = false,
+                            topLeft = Offset((size.width - arcSize) / 2, (size.height - arcSize) / 2),
+                            size = Size(arcSize, arcSize),
+                            style = Stroke(outerGlowWidth, cap = StrokeCap.Round)
+                        )
+
+                        // Core Flowing Gradient Arc
+                        drawArc(
+                            brush = Brush.sweepGradient(
+                                0.0f to Cyan,
+                                0.5f to Purple,
+                                1.0f to Cyan
+                            ),
+                            startAngle = -90f,
+                            sweepAngle = sweepAngle,
+                            useCenter = false,
+                            topLeft = Offset((size.width - arcSize) / 2, (size.height - arcSize) / 2),
+                            size = Size(arcSize, arcSize),
+                            style = Stroke(strokeWidth, cap = StrokeCap.Round)
+                        )
+
+                        // Floating Head Bubble on timeline
+                        val angleRad = Math.toRadians((sweepAngle - 90).toDouble())
+                        val radius = arcSize / 2
+                        val headX = center.x + (radius * cos(angleRad)).toFloat()
+                        val headY = center.y + (radius * sin(angleRad)).toFloat()
+
+                        drawCircle(
+                            color = Color.White,
+                            radius = 6.5.dp.toPx(),
+                            center = Offset(headX, headY)
+                        )
+                        drawCircle(
+                            color = Cyan,
+                            radius = 4.dp.toPx(),
+                            center = Offset(headX, headY)
+                        )
+                    }
                 }
-                AlbumThumb(song.albumArtUri, Modifier.size(240.dp).clip(RoundedCornerShape(32.dp)))
-                if (isPlaying) MiniVisualizer(Modifier.align(Alignment.BottomCenter).padding(bottom = 6.dp))
+
+                // Inner Artwork Container
+                Box(
+                    modifier = Modifier
+                        .size(230.dp)
+                        .clip(CircleShape)
+                        .border(1.5.dp, GlassBorder, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    SongThumb(song, Modifier.fillMaxSize())
+                }
+
+                if (isPlaying) {
+                    MiniVisualizer(Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp))
+                }
             }
 
-            Spacer(Modifier.height(18.dp))
-            Text(song.title, color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-            Text(song.artist, color = MutedLavender, fontSize = 14.sp)
+            Spacer(Modifier.height(14.dp))
+            Text(song.title, color = Color.White, fontSize = 21.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(song.artist, color = MutedLavender, fontSize = 13.sp)
 
-            Spacer(Modifier.height(18.dp))
+            Spacer(Modifier.height(14.dp))
+
+            // Seek Bar
             Slider(
                 value = if (duration > 0) position.toFloat().coerceIn(0f, duration.toFloat()) else 0f,
                 onValueChange = { onSeek(it.toLong()) },
@@ -888,7 +1162,7 @@ private fun FullPlayer(
                 Text(timeText(duration), color = MutedLavender, fontSize = 12.sp)
             }
 
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(12.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onShuffle) { Icon(Icons.Default.Shuffle, null, tint = if (shuffle) Cyan else MutedLavender) }
                 IconButton(onClick = onPrevious) { Icon(Icons.Default.SkipPrevious, null, tint = Color.White, modifier = Modifier.size(36.dp)) }
@@ -911,7 +1185,7 @@ private fun FullPlayer(
                     )
                 }
             }
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(12.dp))
         }
     }
 }
@@ -993,7 +1267,6 @@ private fun SettingsScreen(
         Text("SETTINGS & AUDIO SUITE", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(14.dp))
 
-        // Device Output Section
         Text("ACTIVE OUTPUT ROUTING", color = Cyan, fontWeight = FontWeight.Bold, fontSize = 13.sp)
         Spacer(Modifier.height(6.dp))
         outputs.forEach { output ->
@@ -1026,7 +1299,6 @@ private fun SettingsScreen(
 
         Spacer(Modifier.height(16.dp))
 
-        // Sleep Timer Section
         Text("SLEEP TIMER", color = Purple, fontWeight = FontWeight.Bold, fontSize = 13.sp)
         Spacer(Modifier.height(6.dp))
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1066,7 +1338,6 @@ private fun SettingsScreen(
 
         Spacer(Modifier.height(16.dp))
 
-        // Library Index
         Text("MEDIA STORE INDEX", color = Cyan, fontWeight = FontWeight.Bold, fontSize = 13.sp)
         Spacer(Modifier.height(6.dp))
         Text("$songCount tracks loaded from device storage.", color = MutedLavender, fontSize = 12.sp)
