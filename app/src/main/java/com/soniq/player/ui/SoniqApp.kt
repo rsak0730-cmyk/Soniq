@@ -37,8 +37,11 @@ import androidx.compose.ui.draw.*
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
+import androidx.compose.ui.graphics.asComposeRenderEffect
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -88,10 +91,9 @@ enum class MainTab(val label: String, val icon: ImageVector) {
 @Composable
 fun SoniqApp() {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     val prefs = remember { context.getSharedPreferences("soniq_user_data", 0) }
 
-    var songs by remember { mutableStateOf(emptyList<Song>()) }
+    var songs by remember { mutableStateOf<List<Song>>(emptyList()) }
     var query by remember { mutableStateOf("") }
     var currentTab by remember { mutableStateOf(MainTab.LIBRARY) }
 
@@ -107,16 +109,16 @@ fun SoniqApp() {
     var dynamicPrimaryColor by remember { mutableStateOf(NeonPurple) }
     var dynamicSecondaryColor by remember { mutableStateOf(ElectricCyan) }
 
-    var outputs by remember { mutableStateOf(emptyList<AudioOutput>()) }
-    var favorites by remember { mutableStateOf(prefs.getStringSet("favorites", emptySet())?.toSet() ?: emptySet()) }
-    var recents by remember { mutableStateOf(prefs.getStringSet("recents", emptySet())?.toSet() ?: emptySet()) }
-    var searchHistory by remember { mutableStateOf(prefs.getStringSet("search_history", emptySet())?.toList()?.take(8) ?: emptyList()) }
+    var outputs by remember { mutableStateOf<List<AudioOutput>>(emptyList()) }
+    var favorites by remember { mutableStateOf<Set<String>>(prefs.getStringSet("favorites", emptySet<String>())?.toSet() ?: emptySet()) }
+    var recents by remember { mutableStateOf<Set<String>>(prefs.getStringSet("recents", emptySet<String>())?.toSet() ?: emptySet()) }
+    var searchHistory by remember { mutableStateOf<List<String>>(prefs.getStringSet("search_history", emptySet<String>())?.toList()?.take(8) ?: emptyList()) }
 
-    var playlists by remember { mutableStateOf(prefs.getStringSet("playlists", setOf("Favorites"))?.toList()?.sorted() ?: listOf("Favorites")) }
+    var playlists by remember { mutableStateOf<List<String>>(prefs.getStringSet("playlists", setOf("Favorites"))?.toList()?.sorted() ?: listOf("Favorites")) }
     var selectedPlaylist by remember { mutableStateOf("Favorites") }
-    var playlistSongs by remember { mutableStateOf(prefs.getString("playlist_Favorites", "")?.split("|")?.filter { it.isNotBlank() }?.toSet() ?: emptySet()) }
+    var playlistSongs by remember { mutableStateOf<Set<String>>(prefs.getString("playlist_Favorites", "")?.split("|")?.filter { it.isNotBlank() }?.toSet() ?: emptySet()) }
 
-    var customAlbums by remember { mutableStateOf(prefs.getStringSet("custom_albums", emptySet())?.toList()?.sorted() ?: emptyList()) }
+    var customAlbums by remember { mutableStateOf<List<String>>(prefs.getStringSet("custom_albums", emptySet<String>())?.toList()?.sorted() ?: emptyList()) }
     var showCreateAlbum by remember { mutableStateOf(false) }
     var newAlbumName by remember { mutableStateOf("") }
     var addToAlbumSong by remember { mutableStateOf<Song?>(null) }
@@ -134,7 +136,6 @@ fun SoniqApp() {
     val listState = rememberLazyListState()
     var selectedFilterKey by remember { mutableStateOf<String?>(null) }
 
-    // Dismiss player gesture offset
     var playerOffsetY by remember { mutableFloatStateOf(0f) }
 
     BackHandler(enabled = showPlayer || selectedFilterKey != null) {
@@ -282,7 +283,6 @@ fun SoniqApp() {
                 }
             }
 
-            // Glass Search Bar with RenderEffect Depth Blur
             Box(
                 Modifier
                     .fillMaxWidth()
@@ -356,7 +356,8 @@ fun SoniqApp() {
                         playlistSongs = playlistSongs,
                         customAlbums = customAlbums,
                         getCustomAlbumSongs = { albumName ->
-                            prefs.getString("album_$albumName", "")?.split("|")?.filter { it.isNotBlank() }?.toSet() ?: emptySet()
+                            val raw = prefs.getString("album_$albumName", "") ?: ""
+                            raw.split("|").filter { it.isNotBlank() }.toSet()
                         },
                         onCreateAlbum = { showCreateAlbum = true },
                         onPlay = { song, list -> playSong(song, list) },
@@ -378,7 +379,7 @@ fun SoniqApp() {
                         ids = playlistSongs,
                         onOpen = {
                             selectedPlaylist = it
-                            playlistSongs = prefs.getString("playlist_$it", "")?.split("|")?.filter(String::isNotBlank)?.toSet() ?: emptySet()
+                            playlistSongs = prefs.getString("playlist_$it", "")?.split("|")?.filter { it.isNotBlank() }?.toSet() ?: emptySet()
                             libraryMode = "Playlist"
                             selectedFilterKey = null
                             currentTab = MainTab.LIBRARY
@@ -402,7 +403,6 @@ fun SoniqApp() {
             }
         }
 
-        // Floating Sticky Bottom Bar with RenderEffect depth blur
         Box(
             Modifier
                 .align(Alignment.BottomCenter)
@@ -417,7 +417,6 @@ fun SoniqApp() {
             )
         }
 
-        // Fluid Drag-to-Dismiss Swipable Full Screen Player
         if (showPlayer && currentSong != null) {
             val animatedOffsetY by animateFloatAsState(
                 targetValue = playerOffsetY,
@@ -516,11 +515,12 @@ fun SoniqApp() {
                         Text("No custom albums created yet. Click '+ Album' in the Albums tab to create one.", color = MutedLavender)
                     } else {
                         Column {
-                            customAlbums.forEach { albName ->
+                            for (albName in customAlbums) {
                                 TextButton(
                                     onClick = {
-                                        val existing = prefs.getString("album_$albName", "")?.split("|")?.filter(String::isNotBlank)?.toSet() ?: emptySet()
-                                        val updated = existing + song.id.toString()
+                                        val raw = prefs.getString("album_$albName", "") ?: ""
+                                        val existing: Set<String> = raw.split("|").filter { it.isNotBlank() }.toSet()
+                                        val updated: Set<String> = existing + song.id.toString()
                                         prefs.edit().putString("album_$albName", updated.joinToString("|")).apply()
                                         addToAlbumSong = null
                                     },
@@ -539,7 +539,6 @@ fun SoniqApp() {
             )
         }
 
-        // Tag Editor & Cover Scraper Dialog
         editTagSong?.let { song ->
             TagEditorAndCoverDialog(
                 song = song,
@@ -597,11 +596,11 @@ fun SoniqApp() {
                 title = { Text("Add to Playlist", color = Color.White) },
                 text = {
                     Column {
-                        playlists.forEach { name ->
+                        for (name in playlists) {
                             TextButton(
                                 onClick = {
-                                    val ids = (prefs.getString("playlist_$name", "") ?: "")
-                                        .split("|").filter(String::isNotBlank).toSet() + song.id.toString()
+                                    val raw = prefs.getString("playlist_$name", "") ?: ""
+                                    val ids: Set<String> = raw.split("|").filter { it.isNotBlank() }.toSet() + song.id.toString()
                                     prefs.edit().putString("playlist_$name", ids.joinToString("|")).apply()
                                     if (name == selectedPlaylist) playlistSongs = ids
                                     addToPlaylistSong = null
@@ -622,9 +621,6 @@ fun SoniqApp() {
     }
 }
 
-/**
- * Modifier wrapper for Android 12+ hardware RenderEffect blur
- */
 fun Modifier.liquidGlassBlur(radius: Float = 25f): Modifier = this.then(
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         Modifier.graphicsLayer {
@@ -633,9 +629,6 @@ fun Modifier.liquidGlassBlur(radius: Float = 25f): Modifier = this.then(
     } else Modifier
 )
 
-/**
- * Audio-reactive fluid surface: Hooked to RealtimeFftMonitor.bassEnergy
- */
 @Composable
 fun LiquidWaterWaveBackground(
     isPlaying: Boolean,
@@ -666,7 +659,6 @@ fun LiquidWaterWaveBackground(
 
         val reactiveFactor = if (isPlaying) 1f + (fftBass * 0.45f) else 1f
 
-        // Reactive Wave 1: Top Right Current
         val x1 = w * (0.65f + 0.18f * cos(t1.toDouble()).toFloat())
         val y1 = h * (0.28f + 0.14f * sin(t2.toDouble()).toFloat())
         val r1 = w * (if (isPlaying) 0.95f else 0.75f) * reactiveFactor
@@ -685,7 +677,6 @@ fun LiquidWaterWaveBackground(
             center = Offset(x1, y1)
         )
 
-        // Reactive Wave 2: Bottom Left Current
         val x2 = w * (0.32f + 0.16f * sin((t1 * 1.2f).toDouble()).toFloat())
         val y2 = h * (0.72f + 0.12f * cos((t2 * 0.9f).toDouble()).toFloat())
         val r2 = w * (if (isPlaying) 0.98f else 0.80f) * reactiveFactor
@@ -704,7 +695,6 @@ fun LiquidWaterWaveBackground(
             center = Offset(x2, y2)
         )
 
-        // Realtime Harmonic FFT Water Wave Surface
         if (isPlaying) {
             val wavePath = Path()
             val waveHeight = (24.dp.toPx() * reactiveFactor)
@@ -802,9 +792,6 @@ private fun LiquidOrbWaveformCenterpiece(
     }
 }
 
-/**
- * Neon Liquid Waveform Seek Scrubber
- */
 @Composable
 fun WaveformSeekScrubber(
     position: Long,
@@ -829,7 +816,7 @@ fun WaveformSeekScrubber(
                 }
             }
             .pointerInput(duration) {
-                detectDragGestures { change, _ ->
+                detectDragGestures { change: PointerInputChange, _ ->
                     val pct = (change.position.x / size.width.toFloat()).coerceIn(0f, 1f)
                     onSeek((pct * duration).toLong())
                 }
@@ -932,7 +919,6 @@ private fun FullPlayer(
                 .padding(horizontal = 24.dp, vertical = 14.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Drag handle affordance indicator
             Box(
                 Modifier
                     .size(width = 44.dp, height = 5.dp)
@@ -999,7 +985,7 @@ private fun FullPlayer(
                         Modifier
                             .size(310.dp)
                             .pointerInput(duration) {
-                                detectDragGestures { change, _ ->
+                                detectDragGestures { change: PointerInputChange, _ ->
                                     val touch = change.position
                                     val dx = touch.x - canvasCenter.x
                                     val dy = touch.y - canvasCenter.y
@@ -1092,7 +1078,6 @@ private fun FullPlayer(
 
             Spacer(Modifier.height(10.dp))
 
-            // Waveform Seek Scrubber
             WaveformSeekScrubber(
                 position = position,
                 duration = duration,
@@ -1273,7 +1258,6 @@ private fun HomeScreen(
         songs.filter { it.id.toString() in favorites }.take(6)
     }
 
-    // Smart Auto-Playlists
     val lastAddedSongs = remember(songs) { songs.sortedByDescending { it.dateAdded }.take(6) }
 
     Column(
@@ -1650,7 +1634,7 @@ private fun SamsungAlphabetScroller(
             .pointerInput(alphabet, songs) {
                 detectTapGestures(
                     onPress = { offset ->
-                        val itemHeight = size.height.toFloat() / alphabet.size
+                        val itemHeight = size.height.toFloat() / alphabet.size.coerceAtLeast(1)
                         val index = (offset.y / itemHeight).toInt().coerceIn(0, alphabet.lastIndex)
                         scrollToLetter(alphabet[index])
                         tryAwaitRelease()
@@ -1659,17 +1643,17 @@ private fun SamsungAlphabetScroller(
                 )
             }
             .pointerInput(alphabet, songs) {
-                detectVerticalDragGestures(
+                detectDragGestures(
                     onDragStart = { offset ->
-                        val itemHeight = railHeightPx / alphabet.size
+                        val itemHeight = railHeightPx / alphabet.size.coerceAtLeast(1)
                         val index = (offset.y / itemHeight).toInt().coerceIn(0, alphabet.lastIndex)
                         scrollToLetter(alphabet[index])
                     },
                     onDragEnd = { activeLetter = null },
                     onDragCancel = { activeLetter = null },
-                    onVerticalDrag = { change, _ ->
+                    onDrag = { change: PointerInputChange, _ ->
                         change.consume()
-                        val itemHeight = railHeightPx / alphabet.size
+                        val itemHeight = railHeightPx / alphabet.size.coerceAtLeast(1)
                         val index = (change.position.y / itemHeight).toInt().coerceIn(0, alphabet.lastIndex)
                         scrollToLetter(alphabet[index])
                     }
