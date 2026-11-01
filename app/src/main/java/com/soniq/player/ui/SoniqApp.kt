@@ -60,7 +60,7 @@ import kotlin.math.sin
 private val DeepBlack = Color(0xFF080711)
 private val Purple = Color(0xFF9B6CFF)
 private val VioletGlow = Color(0xFF713CFF)
-private val Cyan = Color(0xFF62F5FF)
+private val ElectricCyan = Color(0xFF62F5FF)
 private val MutedLavender = Color(0xFFB9A9D3)
 private val GlassSurface = Color(0x33281E48)
 private val GlassBorder = Color(0x4462F5FF)
@@ -198,45 +198,9 @@ fun SoniqApp() {
         }
     }
 
-    Box(Modifier.fillMaxSize().background(DeepBlack)) {
-        val shimmerTrans = rememberInfiniteTransition(label = "shimmer")
-        val phase by shimmerTrans.animateFloat(
-            initialValue = 0f,
-            targetValue = 1f,
-            animationSpec = infiniteRepeatable(tween(if (isPlaying) 3200 else 7000, easing = LinearEasing), RepeatMode.Reverse),
-            label = "phase"
-        )
-
-        Canvas(Modifier.fillMaxSize()) {
-            val canvasWidth = size.width
-            val canvasHeight = size.height
-
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(Purple.copy(alpha = if (isPlaying) 0.28f else 0.12f), Color.Transparent),
-                    center = Offset(canvasWidth * (0.8f - phase * 0.2f), canvasHeight * (0.2f + phase * 0.15f)),
-                    radius = 450f
-                )
-            )
-
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(Cyan.copy(alpha = if (isPlaying) 0.22f else 0.08f), Color.Transparent),
-                    center = Offset(canvasWidth * (0.2f + phase * 0.3f), canvasHeight * (0.75f - phase * 0.1f)),
-                    radius = 400f
-                )
-            )
-
-            if (isPlaying) {
-                drawRect(
-                    brush = Brush.linearGradient(
-                        colors = listOf(Color.Transparent, Cyan.copy(alpha = 0.05f + phase * 0.04f), Color.Transparent),
-                        start = Offset(canvasWidth * phase - 200f, 0f),
-                        end = Offset(canvasWidth * phase + 300f, canvasHeight)
-                    )
-                )
-            }
-        }
+    Box(Modifier.fillMaxSize()) {
+        // High-Quality Fluid Liquid Background (Always visible & reactive)
+        LiquidWaterShimmerBackground(isPlaying = isPlaying)
 
         Column(
             Modifier
@@ -246,20 +210,29 @@ fun SoniqApp() {
                 .padding(horizontal = 16.dp)
         ) {
             Row(
-                modifier = Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 8.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 10.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(Modifier.weight(1f)) {
-                    Text("SONIQ", color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp)
+                    Text(
+                        "SONIQ",
+                        color = Color.White,
+                        fontSize = 28.sp,
+                        fontWeight = FontWeight.Black,
+                        letterSpacing = 1.sp
+                    )
                     Text("Liquid Sound Experience", color = MutedLavender, fontSize = 11.sp)
                 }
                 if (currentSong != null) {
                     IconButton(onClick = { showPlayer = true }) {
-                        Icon(Icons.Default.GraphicEq, contentDescription = "Now Playing", tint = Cyan)
+                        Icon(Icons.Default.GraphicEq, contentDescription = "Now Playing", tint = ElectricCyan)
                     }
                 }
             }
 
+            // Glass Search Bar
             OutlinedTextField(
                 value = query,
                 onValueChange = {
@@ -270,8 +243,14 @@ fun SoniqApp() {
                     }
                 },
                 modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text("Search songs, artists, albums, folders...", color = MutedLavender.copy(alpha = 0.7f), fontSize = 13.sp) },
-                leadingIcon = { Icon(Icons.Default.Search, null, tint = Cyan) },
+                placeholder = {
+                    Text(
+                        "Search songs, artists, albums, folders...",
+                        color = MutedLavender.copy(alpha = 0.7f),
+                        fontSize = 13.sp
+                    )
+                },
+                leadingIcon = { Icon(Icons.Default.Search, null, tint = ElectricCyan) },
                 trailingIcon = {
                     if (query.isNotEmpty()) {
                         IconButton(onClick = { query = "" }) { Icon(Icons.Default.Close, "Clear", tint = MutedLavender) }
@@ -280,11 +259,11 @@ fun SoniqApp() {
                 singleLine = true,
                 shape = RoundedCornerShape(26.dp),
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = Cyan,
+                    focusedBorderColor = ElectricCyan,
                     unfocusedBorderColor = GlassBorder,
                     focusedTextColor = Color.White,
                     unfocusedTextColor = Color.White,
-                    cursorColor = Cyan,
+                    cursorColor = ElectricCyan,
                     focusedContainerColor = GlassSurface,
                     unfocusedContainerColor = GlassSurface
                 )
@@ -360,6 +339,7 @@ fun SoniqApp() {
             }
         }
 
+        // Floating Sticky Bottom Bar
         FloatingBottomNavBar(
             currentTab = currentTab,
             onSelect = { currentTab = it },
@@ -369,7 +349,7 @@ fun SoniqApp() {
                 .padding(horizontal = 18.dp, vertical = 12.dp)
         )
 
-        // Full Screen Player with isolated pointer interception (Blocks ghost clicks to underlayer)
+        // Isolated Full Screen Player
         if (showPlayer && currentSong != null) {
             FullPlayer(
                 song = currentSong!!,
@@ -396,6 +376,7 @@ fun SoniqApp() {
             )
         }
 
+        // Playlist Creation Dialog
         if (showCreatePlaylist) {
             AlertDialog(
                 onDismissRequest = { showCreatePlaylist = false },
@@ -409,7 +390,7 @@ fun SoniqApp() {
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedTextColor = Color.White,
                             unfocusedTextColor = Color.White,
-                            focusedBorderColor = Cyan
+                            focusedBorderColor = ElectricCyan
                         )
                     )
                 },
@@ -425,7 +406,7 @@ fun SoniqApp() {
                         }
                         newPlaylistName = ""
                         showCreatePlaylist = false
-                    }) { Text("Create", color = Cyan) }
+                    }) { Text("Create", color = ElectricCyan) }
                 },
                 dismissButton = {
                     TextButton(onClick = { showCreatePlaylist = false }) { Text("Cancel", color = MutedLavender) }
@@ -451,7 +432,7 @@ fun SoniqApp() {
                                 },
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text(name, color = Cyan)
+                                Text(name, color = ElectricCyan)
                             }
                         }
                     }
@@ -462,6 +443,110 @@ fun SoniqApp() {
                 }
             )
         }
+    }
+}
+
+/**
+ * Liquid Water Shimmer Background:
+ * Uses fluid sine/cosine orbital paths and screen-proportional radiant gradients
+ * to produce smooth water reflections, caustic shimmer beams, and ambient violet blooms.
+ */
+@Composable
+fun LiquidWaterShimmerBackground(isPlaying: Boolean, modifier: Modifier = Modifier) {
+    val infiniteTransition = rememberInfiniteTransition(label = "liquid_shimmer_trans")
+    
+    // Wave oscillation speed changes dynamically between playing and paused states
+    val waveT by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 6.28318f, // 2*PI radians
+        animationSpec = infiniteRepeatable(
+            animation = tween(if (isPlaying) 6500 else 12000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "wave_radian"
+    )
+
+    val causticShift by infiniteTransition.animateFloat(
+        initialValue = -0.3f,
+        targetValue = 1.3f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(if (isPlaying) 4000 else 8500, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "caustic_shift"
+    )
+
+    Canvas(modifier = modifier.fillMaxSize()) {
+        val w = size.width
+        val h = size.height
+
+        // 1. OLED Base Color
+        drawRect(color = DeepBlack)
+
+        // 2. Upper Floating Purple Liquid Orb (Oscillates across top third)
+        val orb1X = w * (0.68f + 0.18f * cos(waveT.toDouble()).toFloat())
+        val orb1Y = h * (0.24f + 0.12f * sin(waveT.toDouble()).toFloat())
+        val orb1Radius = w * (if (isPlaying) 0.85f else 0.70f)
+
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    VioletGlow.copy(alpha = if (isPlaying) 0.42f else 0.22f),
+                    Purple.copy(alpha = if (isPlaying) 0.24f else 0.10f),
+                    Color.Transparent
+                ),
+                center = Offset(orb1X, orb1Y),
+                radius = orb1Radius
+            ),
+            radius = orb1Radius,
+            center = Offset(orb1X, orb1Y)
+        )
+
+        // 3. Lower Electric Cyan Liquid Pool (Oscillates around bottom-left)
+        val orb2X = w * (0.28f + 0.15f * sin((waveT * 0.8f).toDouble()).toFloat())
+        val orb2Y = h * (0.75f + 0.10f * cos((waveT * 0.8f).toDouble()).toFloat())
+        val orb2Radius = w * (if (isPlaying) 0.90f else 0.75f)
+
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    ElectricCyan.copy(alpha = if (isPlaying) 0.30f else 0.14f),
+                    Color(0xFF20B9C9).copy(alpha = if (isPlaying) 0.16f else 0.06f),
+                    Color.Transparent
+                ),
+                center = Offset(orb2X, orb2Y),
+                radius = orb2Radius
+            ),
+            radius = orb2Radius,
+            center = Offset(orb2X, orb2Y)
+        )
+
+        // 4. Center Ambient Violet Blend
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    Purple.copy(alpha = if (isPlaying) 0.18f else 0.08f),
+                    Color.Transparent
+                ),
+                center = Offset(w * 0.5f, h * 0.5f),
+                radius = w * 0.65f
+            ),
+            radius = w * 0.65f,
+            center = Offset(w * 0.5f, h * 0.5f)
+        )
+
+        // 5. Water Shimmer Rays (Linear caustic reflection)
+        drawRect(
+            brush = Brush.linearGradient(
+                0.0f to Color.Transparent,
+                0.45f to ElectricCyan.copy(alpha = if (isPlaying) 0.09f else 0.03f),
+                0.55f to Color.White.copy(alpha = if (isPlaying) 0.07f else 0.02f),
+                0.65f to Purple.copy(alpha = if (isPlaying) 0.06f else 0.02f),
+                1.0f to Color.Transparent,
+                start = Offset(w * causticShift - w * 0.4f, 0f),
+                end = Offset(w * causticShift + w * 0.4f, h)
+            )
+        )
     }
 }
 
@@ -506,7 +591,7 @@ private fun FloatingBottomNavBar(
                         Icon(
                             tab.icon,
                             contentDescription = tab.label,
-                            tint = if (selected) Cyan else MutedLavender.copy(alpha = 0.6f),
+                            tint = if (selected) ElectricCyan else MutedLavender.copy(alpha = 0.6f),
                             modifier = Modifier.size(24.dp)
                         )
                         if (selected) {
@@ -558,7 +643,7 @@ private fun HomeScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("${songs.size}", color = Cyan, fontSize = 24.sp, fontWeight = FontWeight.Black)
+                    Text("${songs.size}", color = ElectricCyan, fontSize = 24.sp, fontWeight = FontWeight.Black)
                     Text("Tracks", color = MutedLavender, fontSize = 12.sp)
                 }
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -573,7 +658,7 @@ private fun HomeScreen(
         }
 
         Spacer(Modifier.height(18.dp))
-        Text("RECENTLY PLAYED", color = Cyan, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+        Text("RECENTLY PLAYED", color = ElectricCyan, fontWeight = FontWeight.Bold, fontSize = 13.sp)
         Spacer(Modifier.height(8.dp))
 
         if (recentSongs.isEmpty()) {
@@ -658,7 +743,7 @@ private fun LibraryScreen(
                     label = { Text(item) },
                     colors = FilterChipDefaults.filterChipColors(
                         selectedContainerColor = Purple.copy(alpha = 0.35f),
-                        selectedLabelColor = Cyan,
+                        selectedLabelColor = ElectricCyan,
                         labelColor = MutedLavender
                     )
                 )
@@ -673,9 +758,9 @@ private fun LibraryScreen(
                     .padding(vertical = 4.dp)
                     .clickable { onFilterKey(null) }
             ) {
-                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Cyan, modifier = Modifier.size(18.dp))
+                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = ElectricCyan, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
-                Text(filterKey, color = Cyan, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                Text(filterKey, color = ElectricCyan, fontWeight = FontWeight.Bold, fontSize = 14.sp)
                 Spacer(Modifier.width(6.dp))
                 Text("(${songsToDisplay.size} tracks)", color = MutedLavender, fontSize = 12.sp)
             }
@@ -812,7 +897,7 @@ private fun GroupCard(
                     Modifier
                         .size(48.dp)
                         .clip(RoundedCornerShape(12.dp))
-                        .background(Brush.linearGradient(listOf(Purple.copy(alpha = 0.5f), Cyan.copy(alpha = 0.5f)))),
+                        .background(Brush.linearGradient(listOf(Purple.copy(alpha = 0.5f), ElectricCyan.copy(alpha = 0.5f)))),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(icon, null, tint = Color.White)
@@ -823,7 +908,7 @@ private fun GroupCard(
                 Text(title, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(subtitle, color = MutedLavender, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            Icon(Icons.Default.ChevronRight, null, tint = Cyan)
+            Icon(Icons.Default.ChevronRight, null, tint = ElectricCyan)
         }
     }
 }
@@ -893,7 +978,7 @@ private fun SamsungAlphabetScroller(
                 val isSelected = activeLetter == letter
                 Text(
                     text = letter.toString(),
-                    color = if (isSelected) Cyan else MutedLavender.copy(alpha = 0.5f),
+                    color = if (isSelected) ElectricCyan else MutedLavender.copy(alpha = 0.5f),
                     fontSize = 10.sp,
                     fontWeight = if (isSelected) FontWeight.Black else FontWeight.Normal
                 )
@@ -907,7 +992,7 @@ private fun SamsungAlphabetScroller(
                     .offset(x = (-46).dp)
                     .size(48.dp)
                     .clip(CircleShape)
-                    .background(Brush.radialGradient(listOf(Cyan, Purple)))
+                    .background(Brush.radialGradient(listOf(ElectricCyan, Purple)))
                     .border(2.dp, Color.White, CircleShape),
                 contentAlignment = Alignment.Center
             ) {
@@ -942,7 +1027,7 @@ private fun SongCard(
             Column(Modifier.weight(1f)) {
                 Text(song.title, color = Color.White, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text("${song.artist} • ${song.album}", color = MutedLavender, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(song.folder, color = Cyan.copy(alpha = 0.8f), fontSize = 10.sp)
+                Text(song.folder, color = ElectricCyan.copy(alpha = 0.8f), fontSize = 10.sp)
             }
             IconButton(onClick = onFavorite) {
                 Icon(
@@ -952,17 +1037,12 @@ private fun SongCard(
                 )
             }
             IconButton(onClick = onAdd) {
-                Icon(Icons.Default.PlaylistAdd, null, tint = Cyan)
+                Icon(Icons.Default.PlaylistAdd, null, tint = ElectricCyan)
             }
         }
     }
 }
 
-/**
- * Enhanced Thumbnail loader:
- * 1. Tries MediaStore Album Art.
- * 2. If null or Vidmate downloaded mp3, loads embedded picture via MediaMetadataRetriever in background.
- */
 @Composable
 private fun SongThumb(song: Song, modifier: Modifier = Modifier) {
     val context = LocalContext.current
@@ -1000,7 +1080,7 @@ private fun SongThumb(song: Song, modifier: Modifier = Modifier) {
     } else {
         Box(
             modifier = modifier
-                .background(Brush.linearGradient(listOf(Purple, Cyan)), RoundedCornerShape(14.dp)),
+                .background(Brush.linearGradient(listOf(Purple, ElectricCyan)), RoundedCornerShape(14.dp)),
             contentAlignment = Alignment.Center
         ) {
             Icon(Icons.Default.MusicNote, null, tint = Color.White)
@@ -1027,7 +1107,6 @@ private fun FullPlayer(
 ) {
     val progress = if (duration > 0) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f
 
-    // Animated glow pulse for the circular timeline
     val infiniteTransition = rememberInfiniteTransition(label = "player_liquid")
     val pulseGlow by infiniteTransition.animateFloat(
         initialValue = 0.7f,
@@ -1036,16 +1115,14 @@ private fun FullPlayer(
         label = "glow"
     )
 
-    // Intercept clicks completely so no background elements get touched
     Box(
         Modifier
             .fillMaxSize()
-            .background(Brush.verticalGradient(listOf(Color(0xFF140D22), DeepBlack)))
-            .pointerInput(Unit) {
-                // Absorbs all touch gestures from passing underneath
-                detectTapGestures { }
-            }
+            .pointerInput(Unit) { detectTapGestures { } }
     ) {
+        // Shimmering background inside full player as well
+        LiquidWaterShimmerBackground(isPlaying = isPlaying)
+
         Column(
             Modifier
                 .fillMaxSize()
@@ -1057,19 +1134,17 @@ private fun FullPlayer(
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onClose) { Icon(Icons.Default.KeyboardArrowDown, null, tint = Color.White) }
                 Text("NOW PLAYING", color = MutedLavender, modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                IconButton(onClick = onQueue) { Icon(Icons.Default.QueueMusic, null, tint = Cyan) }
+                IconButton(onClick = onQueue) { Icon(Icons.Default.QueueMusic, null, tint = ElectricCyan) }
             }
 
             Spacer(Modifier.height(16.dp))
 
-            // Liquid Circular Timeline & Visual Centerpiece
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 Canvas(Modifier.size(285.dp)) {
                     val strokeWidth = 9.dp.toPx()
                     val outerGlowWidth = 18.dp.toPx()
                     val arcSize = size.width - outerGlowWidth
 
-                    // Inactive Background Track (Glossy dark glass ring)
                     drawCircle(
                         color = Color(0x334E3577),
                         radius = arcSize / 2,
@@ -1077,13 +1152,15 @@ private fun FullPlayer(
                         style = Stroke(strokeWidth, cap = StrokeCap.Round)
                     )
 
-                    // Active Glowing Liquid Timeline Arc
                     val sweepAngle = 360f * progress
                     if (sweepAngle > 0f) {
-                        // Ambient Outer Bloom
                         drawArc(
                             brush = Brush.sweepGradient(
-                                listOf(VioletGlow.copy(alpha = 0.35f * pulseGlow), Cyan.copy(alpha = 0.5f * pulseGlow), VioletGlow.copy(alpha = 0.35f * pulseGlow))
+                                listOf(
+                                    VioletGlow.copy(alpha = 0.35f * pulseGlow),
+                                    ElectricCyan.copy(alpha = 0.5f * pulseGlow),
+                                    VioletGlow.copy(alpha = 0.35f * pulseGlow)
+                                )
                             ),
                             startAngle = -90f,
                             sweepAngle = sweepAngle,
@@ -1093,12 +1170,11 @@ private fun FullPlayer(
                             style = Stroke(outerGlowWidth, cap = StrokeCap.Round)
                         )
 
-                        // Core Flowing Gradient Arc
                         drawArc(
                             brush = Brush.sweepGradient(
-                                0.0f to Cyan,
+                                0.0f to ElectricCyan,
                                 0.5f to Purple,
-                                1.0f to Cyan
+                                1.0f to ElectricCyan
                             ),
                             startAngle = -90f,
                             sweepAngle = sweepAngle,
@@ -1108,26 +1184,16 @@ private fun FullPlayer(
                             style = Stroke(strokeWidth, cap = StrokeCap.Round)
                         )
 
-                        // Floating Head Bubble on timeline
                         val angleRad = Math.toRadians((sweepAngle - 90).toDouble())
                         val radius = arcSize / 2
                         val headX = center.x + (radius * cos(angleRad)).toFloat()
                         val headY = center.y + (radius * sin(angleRad)).toFloat()
 
-                        drawCircle(
-                            color = Color.White,
-                            radius = 6.5.dp.toPx(),
-                            center = Offset(headX, headY)
-                        )
-                        drawCircle(
-                            color = Cyan,
-                            radius = 4.dp.toPx(),
-                            center = Offset(headX, headY)
-                        )
+                        drawCircle(color = Color.White, radius = 6.5.dp.toPx(), center = Offset(headX, headY))
+                        drawCircle(color = ElectricCyan, radius = 4.dp.toPx(), center = Offset(headX, headY))
                     }
                 }
 
-                // Inner Artwork Container
                 Box(
                     modifier = Modifier
                         .size(230.dp)
@@ -1149,12 +1215,11 @@ private fun FullPlayer(
 
             Spacer(Modifier.height(14.dp))
 
-            // Seek Bar
             Slider(
                 value = if (duration > 0) position.toFloat().coerceIn(0f, duration.toFloat()) else 0f,
                 onValueChange = { onSeek(it.toLong()) },
                 valueRange = 0f..duration.coerceAtLeast(1L).toFloat(),
-                colors = SliderDefaults.colors(thumbColor = Cyan, activeTrackColor = Purple)
+                colors = SliderDefaults.colors(thumbColor = ElectricCyan, activeTrackColor = Purple)
             )
 
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -1164,12 +1229,12 @@ private fun FullPlayer(
 
             Spacer(Modifier.height(12.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onShuffle) { Icon(Icons.Default.Shuffle, null, tint = if (shuffle) Cyan else MutedLavender) }
+                IconButton(onClick = onShuffle) { Icon(Icons.Default.Shuffle, null, tint = if (shuffle) ElectricCyan else MutedLavender) }
                 IconButton(onClick = onPrevious) { Icon(Icons.Default.SkipPrevious, null, tint = Color.White, modifier = Modifier.size(36.dp)) }
                 Surface(
                     shape = CircleShape,
                     color = VioletGlow,
-                    border = BorderStroke(2.dp, Cyan),
+                    border = BorderStroke(2.dp, ElectricCyan),
                     modifier = Modifier.size(68.dp).clickable(onClick = onPlayPause)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
@@ -1181,7 +1246,7 @@ private fun FullPlayer(
                     Icon(
                         if (repeatMode == Player.REPEAT_MODE_ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
                         null,
-                        tint = if (repeatMode != Player.REPEAT_MODE_OFF) Cyan else MutedLavender
+                        tint = if (repeatMode != Player.REPEAT_MODE_OFF) ElectricCyan else MutedLavender
                     )
                 }
             }
@@ -1201,7 +1266,7 @@ private fun MiniVisualizer(modifier: Modifier = Modifier) {
                 animationSpec = infiniteRepeatable(tween(260 + i * 18, easing = FastOutSlowInEasing), RepeatMode.Reverse),
                 label = "bar$i"
             )
-            Box(Modifier.width(3.dp).height(h.dp).clip(CircleShape).background(Brush.verticalGradient(listOf(Cyan, Purple))))
+            Box(Modifier.width(3.dp).height(h.dp).clip(CircleShape).background(Brush.verticalGradient(listOf(ElectricCyan, Purple))))
         }
     }
 }
@@ -1237,7 +1302,7 @@ private fun PlaylistScreen(
                 modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable { onOpen(name) }
             ) {
                 Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.QueueMusic, null, tint = Cyan)
+                    Icon(Icons.Default.QueueMusic, null, tint = ElectricCyan)
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
                         Text(name, color = Color.White, fontWeight = FontWeight.SemiBold)
@@ -1267,7 +1332,7 @@ private fun SettingsScreen(
         Text("SETTINGS & AUDIO SUITE", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(14.dp))
 
-        Text("ACTIVE OUTPUT ROUTING", color = Cyan, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+        Text("ACTIVE OUTPUT ROUTING", color = ElectricCyan, fontWeight = FontWeight.Bold, fontSize = 13.sp)
         Spacer(Modifier.height(6.dp))
         outputs.forEach { output ->
             Surface(
@@ -1285,7 +1350,7 @@ private fun SettingsScreen(
                             else -> Icons.Default.Speaker
                         },
                         null,
-                        tint = Cyan
+                        tint = ElectricCyan
                     )
                     Spacer(Modifier.width(12.dp))
                     Column {
@@ -1330,7 +1395,7 @@ private fun SettingsScreen(
         if (timerLeft > 0) {
             Spacer(Modifier.height(6.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Remaining: %02d:%02d".format(timerLeft / 60, timerLeft % 60), color = Cyan, fontWeight = FontWeight.Bold)
+                Text("Remaining: %02d:%02d".format(timerLeft / 60, timerLeft % 60), color = ElectricCyan, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.width(10.dp))
                 TextButton(onClick = onCancelTimer) { Text("Cancel", color = Color(0xFFFF5286)) }
             }
@@ -1338,14 +1403,14 @@ private fun SettingsScreen(
 
         Spacer(Modifier.height(16.dp))
 
-        Text("MEDIA STORE INDEX", color = Cyan, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+        Text("MEDIA STORE INDEX", color = ElectricCyan, fontWeight = FontWeight.Bold, fontSize = 13.sp)
         Spacer(Modifier.height(6.dp))
         Text("$songCount tracks loaded from device storage.", color = MutedLavender, fontSize = 12.sp)
         Spacer(Modifier.height(6.dp))
         Button(onClick = onRescan, colors = ButtonDefaults.buttonColors(containerColor = GlassSurface)) {
-            Icon(Icons.Default.Refresh, null, tint = Cyan)
+            Icon(Icons.Default.Refresh, null, tint = ElectricCyan)
             Spacer(Modifier.width(6.dp))
-            Text("Rescan Local Music", color = Cyan)
+            Text("Rescan Local Music", color = ElectricCyan)
         }
 
         Spacer(Modifier.height(20.dp))
