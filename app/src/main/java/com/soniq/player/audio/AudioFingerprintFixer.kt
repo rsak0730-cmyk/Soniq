@@ -25,12 +25,13 @@ data class FingerprintResult(
  */
 object AudioFingerprintFixer {
 
+    // Using raw strings ("""...""") or double-escaped backslashes prevents "Unsupported escape sequence" compiler errors
     private val SPAM_PATTERNS = listOf(
-        Regex("(?i)\\[.*?(official\vert{}audio\vert{}video\vert{}lyrics\vert{}hd\vert{}4k\vert{}download\vert{}mp3).*?\\]"),
-        Regex("(?i)\\(.*?(official\vert{}audio\vert{}video\vert{}lyrics\vert{}hd\vert{}4k\vert{}download\vert{}mp3).*?\\)"),
-        Regex("(?i)_320kbps|_128kbps|\\.mp3|\\.m4a|\\.flac|\\.wav"),
-        Regex("^[0-9]+[\\s._-]+"), // Leading track numbers "01 - "
-        Regex("(?i)pagalworld|mr-jatt|djpunjab|ytmp3|yt-dlp")
+        Regex("""(?i)\[.*?(official|audio|video|lyrics|hd|4k|download|mp3).*?\]"""),
+        Regex("""(?i)\(.*?(official|audio|video|lyrics|hd|4k|download|mp3).*?\)"""),
+        Regex("""(?i)_320kbps|_128kbps|\.mp3|\.m4a|\.flac|\.wav"""),
+        Regex("""^[0-9]+[\s._-]+"""), // Leading track numbers like "01 - "
+        Regex("""(?i)pagalworld|mr-jatt|djpunjab|ytmp3|yt-dlp""")
     )
 
     fun cleanLocalTitle(rawTitle: String): String {
@@ -38,14 +39,18 @@ object AudioFingerprintFixer {
         for (pattern in SPAM_PATTERNS) {
             cleaned = cleaned.replace(pattern, " ")
         }
-        return cleaned.replace(Regex("\\s+"), " ").trim()
+        return cleaned.replace(Regex("""\s+"""), " ").trim()
     }
 
     suspend fun autoFixSong(context: Context, song: Song): FingerprintResult = withContext(Dispatchers.IO) {
         val cleanedTitle = cleanLocalTitle(song.title)
-        val cleanedArtist = if (song.artist.contains("Unknown", true)) "" else song.artist.replace(Regex("(?i)various|unknown"), "").trim()
+        val cleanedArtist = if (song.artist.contains("Unknown", true)) {
+            ""
+        } else {
+            song.artist.replace(Regex("""(?i)various|unknown"""), "").trim()
+        }
 
-        val searchQuery = if (cleanedArtist.isNotBlank()) "$cleanedTitle$cleanedArtist" else cleanedTitle
+        val searchQuery = if (cleanedArtist.isNotBlank()) "$cleanedTitle $cleanedArtist" else cleanedTitle
 
         try {
             val encoded = URLEncoder.encode(searchQuery, "UTF-8")
