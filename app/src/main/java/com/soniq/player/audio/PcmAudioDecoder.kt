@@ -15,7 +15,7 @@ import java.util.zip.Deflater
 
 object PcmAudioDecoder {
 
-    private const val MAX_DECODE_DURATION_US = 120_000_000L // Analyze up to first 120 seconds
+    private const val MAX_DECODE_DURATION_US = 120_000_000L
     private const val TIMEOUT_US = 5000L
 
     suspend fun extractFingerprintData(context: Context, audioUri: Uri): Pair<Int, String>? = withContext(Dispatchers.IO) {

@@ -24,8 +24,8 @@ data class FingerprintResult(
 object AudioFingerprintFixer {
 
     private val SPAM_PATTERNS = listOf(
-        Regex("""(?i)\[.*?(official\vert{}audio\vert{}video\vert{}lyrics\vert{}hd\vert{}4k\vert{}download\vert{}mp3).*?\]"""),
-        Regex("""(?i)\(.*?(official\vert{}audio\vert{}video\vert{}lyrics\vert{}hd\vert{}4k\vert{}download\vert{}mp3).*?\)"""),
+        Regex("""(?i)\[.*?(official|audio|video|lyrics|hd|4k|download|mp3).*?\]"""),
+        Regex("""(?i)\(.*?(official|audio|video|lyrics|hd|4k|download|mp3).*?\)"""),
         Regex("""(?i)_320kbps|_128kbps|\.mp3|\.m4a|\.flac|\.wav"""),
         Regex("""^[0-9]+[\s._-]+"""),
         Regex("""(?i)pagalworld|mr-jatt|djpunjab|ytmp3|yt-dlp""")
@@ -54,26 +54,24 @@ object AudioFingerprintFixer {
     suspend fun autoFixSong(context: Context, song: Song): FingerprintResult = withContext(Dispatchers.IO) {
         val cleanedTitle = cleanLocalTitle(song.title)
 
-        // Step 1: Acoustic Waveform Analysis via AcoustID
         val audioUri = Uri.parse(song.uri)
         val pcmData = PcmAudioDecoder.extractFingerprintData(context, audioUri)
         if (pcmData != null) {
             val (durationSec, fingerprint) = pcmData
             val acoustResult = acoustIdClient.lookup(durationSec, fingerprint)
-            if (acoustResult != null && acoustResult.matchConfidence >= 0.70f) {
-                val coverArt = ArtworkScraper.searchCoverArtUrl("${acoustResult.title}${acoustResult.artist}")
+            if (acoustResult != null && acoustResult.matchConfidence >= 0.65f) {
+                val coverArt = ArtworkScraper.searchCoverArtUrl("${acoustResult.title} ${acoustResult.artist}")
                 return@withContext acoustResult.copy(albumArtUrl = coverArt)
             }
         }
 
-        // Step 2: Fallback to iTunes Store Metadata Proximity Search
         val cleanedArtist = if (song.artist.contains("Unknown", true)) {
             ""
         } else {
             song.artist.replace(Regex("""(?i)various|unknown"""), "").trim()
         }
 
-        val searchQuery = if (cleanedArtist.isNotBlank()) "$cleanedTitle$cleanedArtist" else cleanedTitle
+        val searchQuery = if (cleanedArtist.isNotBlank()) "$cleanedTitle $cleanedArtist" else cleanedTitle
 
         try {
             val encoded = URLEncoder.encode(searchQuery, "UTF-8")
@@ -149,7 +147,7 @@ object AudioFingerprintFixer {
                 }
                 fixedCount++
             }
-            delay(350) // AcoustID rate-limiting safeguard
+            delay(350)
         }
         fixedCount
     }

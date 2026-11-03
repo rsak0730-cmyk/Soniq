@@ -2,60 +2,19 @@ package com.soniq.player.audio
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.SerialName
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
-@Serializable
-data class AcoustIdApiResponse(
-    val status: String,
-    val results: List<AcoustIdResult> = emptyList()
-)
-
-@Serializable
-data class AcoustIdResult(
-    val id: String,
-    val score: Double,
-    val recordings: List<AcoustIdRecording> = emptyList()
-)
-
-@Serializable
-data class AcoustIdRecording(
-    val id: String,
-    val title: String? = null,
-    val artists: List<AcoustIdArtist> = emptyList(),
-    @SerialName("releasegroups") val releaseGroups: List<AcoustIdReleaseGroup> = emptyList()
-)
-
-@Serializable
-data class AcoustIdArtist(
-    val id: String? = null,
-    val name: String
-)
-
-@Serializable
-data class AcoustIdReleaseGroup(
-    val id: String? = null,
-    val title: String,
-    val type: String? = null
-)
-
 class AcoustIdClient(
-    private val clientApiKey: String = "8XaBELgH" // Default public client application key
+    private val clientApiKey: String = "8XaBELgH"
 ) {
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.SECONDS)
         .build()
-
-    private val json = Json {
-        ignoreUnknownKeys = true
-        coerceInputValues = true
-    }
 
     suspend fun lookup(durationSeconds: Int, fingerprint: String): FingerprintResult? = withContext(Dispatchers.IO) {
         val formBody = FormBody.Builder()
@@ -76,28 +35,54 @@ class AcoustIdClient(
             if (!response.isSuccessful) return@withContext null
 
             val responseBody = response.body?.string() ?: return@withContext null
-            val apiData = json.decodeFromString<AcoustIdApiResponse>(responseBody)
+            val root = JSONObject(responseBody)
 
-            if (apiData.status != "ok") return@withContext null
+            if (root.optString("status") != "ok") return@withContext null
 
-            val topResult = apiData.results
-                .filter { it.score >= 0.65 }
-                .maxByOrNull { it.score } ?: return@withContext null
+            val results = root.optJSONArray("results") ?: return@withContext null
+            if (results.length() == 0) return@withContext null
 
-            val topRecording = topResult.recordings.firstOrNull { !it.title.isNullOrBlank() }
-                ?: return@withContext null
+            var bestScore = 0.0
+            var matchedTitle: String? = null
+            var matchedArtist: String? = null
+            var matchedAlbum: String? = null
 
-            val songTitle = topRecording.title ?: return@withContext null
-            val songArtist = topRecording.artists.firstOrNull()?.name ?: "Unknown Artist"
-            val songAlbum = topRecording.releaseGroups.firstOrNull()?.title ?: "Unknown Album"
+            for (i in 0 until results.length()) {
+                val item = results.getJSONObject(i)
+                val score = item.optDouble("score", 0.0)
+                if (score < 0.65 || score <= bestScore) continue
 
-            FingerprintResult(
-                title = songTitle,
-                artist = songArtist,
-                album = songAlbum,
-                albumArtUrl = null,
-                matchConfidence = topResult.score.toFloat()
-            )
+                val recordings = item.optJSONArray("recordings") ?: continue
+                for (j in 0 until recordings.length()) {
+                    val rec = recordings.getJSONObject(j)
+                    val title = rec.optString("title", "")
+                    if (title.isNotBlank()) {
+                        bestScore = score
+                        matchedTitle = title
+
+                        val artists = rec.optJSONArray("artists")
+                        matchedArtist = if (artists != null && artists.length() > 0) {
+                            artists.getJSONObject(0).optString("name", "Unknown Artist")
+                        } else "Unknown Artist"
+
+                        val releaseGroups = rec.optJSONArray("releasegroups")
+                        matchedAlbum = if (releaseGroups != null && releaseGroups.length() > 0) {
+                            releaseGroups.getJSONObject(0).optString("title", "Unknown Album")
+                        } else "Unknown Album"
+                        break
+                    }
+                }
+            }
+
+            if (matchedTitle != null && matchedArtist != null) {
+                FingerprintResult(
+                    title = matchedTitle,
+                    artist = matchedArtist,
+                    album = matchedAlbum ?: "Unknown Album",
+                    albumArtUrl = null,
+                    matchConfidence = bestScore.toFloat()
+                )
+            } else null
         } catch (e: Exception) {
             e.printStackTrace()
             null
