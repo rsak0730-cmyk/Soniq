@@ -43,6 +43,9 @@ object AudioFingerprintFixer {
     }
 
     fun isSongUnknown(song: Song): Boolean {
+        // Skip radio streams or negative temporary IDs
+        if (song.id < 0 || song.folder.equals("Radio", ignoreCase = true)) return false
+
         val unknownWords = listOf("<unknown>", "unknown", "untitled", "track")
         val artistUnknown = song.artist.isBlank() || unknownWords.any { song.artist.contains(it, ignoreCase = true) }
         val titleIsRaw = song.title.endsWith(".mp3", ignoreCase = true) ||
@@ -57,25 +60,29 @@ object AudioFingerprintFixer {
     suspend fun autoFixSong(context: Context, song: Song): FingerprintResult = withContext(Dispatchers.IO) {
         val cleanedTitle = cleanLocalTitle(song.title)
 
-        // Pass 1: Localized & Title-Only Online Search (Extremely high hit rate for regional / Bollywood tracks)
+        // Pass 1: Localized & Title-Only Online Search
         val onlineMatch = queryOnlineSmart(cleanedTitle, song)
         if (onlineMatch != null && onlineMatch.matchConfidence >= 0.60f) {
             return@withContext onlineMatch
         }
 
-        // Pass 2: Waveform Fingerprinting (AcoustID)
-        val audioUri = Uri.parse(song.uri)
-        val pcmData = PcmAudioDecoder.extractFingerprintData(context, audioUri)
-        if (pcmData != null) {
-            val (durationSec, fingerprint) = pcmData
-            val acoustResult = acoustIdClient.lookup(durationSec, fingerprint)
-            if (acoustResult != null && acoustResult.matchConfidence >= 0.55f) {
-                val coverArt = ArtworkScraper.searchCoverArtUrl("${acoustResult.title}${acoustResult.artist}")
-                return@withContext acoustResult.copy(albumArtUrl = coverArt)
+        // Pass 2: Waveform Fingerprinting (Safe check)
+        runCatching {
+            val audioUri = Uri.parse(song.uri)
+            if (audioUri.scheme != null && !audioUri.toString().startsWith("http")) {
+                val pcmData = PcmAudioDecoder.extractFingerprintData(context, audioUri)
+                if (pcmData != null) {
+                    val (durationSec, fingerprint) = pcmData
+                    val acoustResult = acoustIdClient.lookup(durationSec, fingerprint)
+                    if (acoustResult != null && acoustResult.matchConfidence >= 0.55f) {
+                        val coverArt = ArtworkScraper.searchCoverArtUrl("${acoustResult.title}${acoustResult.artist}")
+                        return@withContext acoustResult.copy(albumArtUrl = coverArt)
+                    }
+                }
             }
         }
 
-        // Pass 3: Fallback cleanly formatted name from cleaned filename
+        // Pass 3: Fallback cleaned metadata
         val safeArtist = if (song.artist.contains("unknown", true) || song.artist.isBlank()) "Various Artists" else song.artist
         onlineMatch ?: FingerprintResult(
             title = cleanedTitle.ifBlank { song.title },
@@ -86,30 +93,28 @@ object AudioFingerprintFixer {
         )
     }
 
-    private fun queryOnlineSmart(cleanedTitle: String, song: Song): FingerprintResult? {
+    private suspend fun queryOnlineSmart(cleanedTitle: String, song: Song): FingerprintResult? = withContext(Dispatchers.IO) {
         val cleanArtist = if (song.artist.contains("Unknown", true)) "" 
         else song.artist.replace(Regex("""(?i)various|unknown"""), "").trim()
 
-        // Multiple query variations: (Title + Artist) -> (Title alone)
         val queries = mutableListOf<String>()
         if (cleanArtist.isNotBlank()) queries.add("$cleanedTitle$cleanArtist")
         queries.add(cleanedTitle)
 
         for (query in queries) {
             val match = searchStore(query, song.durationMs)
-            if (match != null) return match
+            if (match != null) return@withContext match
         }
-        return null
+        null
     }
 
     private fun searchStore(query: String, targetDurationMs: Long): FingerprintResult? {
         return try {
             val encoded = URLEncoder.encode(query, "UTF-8")
-            // country=IN covers Bollywood, regional, and international songs accurately
             val url = URL("https://itunes.apple.com/search?term=$encoded&entity=song&limit=6&country=IN")
             val conn = (url.openConnection() as HttpURLConnection).apply {
-                connectTimeout = 3500
-                readTimeout = 3500
+                connectTimeout = 3000
+                readTimeout = 3000
             }
 
             val jsonStr = conn.inputStream.bufferedReader().use { it.readText() }
@@ -139,7 +144,6 @@ object AudioFingerprintFixer {
                 val rawArt = best.optString("artworkUrl100", "")
                 val hdArt = rawArt.replace("100x100bb", "600x600bb").ifBlank { null }
 
-                // Flexible threshold up to 45 seconds to accommodate video rip intros/outros
                 val confidence = when {
                     minDiff < 8000 -> 0.95f
                     minDiff < 45000 -> 0.85f
@@ -167,37 +171,44 @@ object AudioFingerprintFixer {
     ): Int = withContext(Dispatchers.IO) {
         val unknownList = songs.filter { isSongUnknown(it) }
         val total = unknownList.size
-        var fixedCount = 0
+        if (total == 0) return@withContext 0
 
-        val semaphore = Semaphore(3)
+        var fixedCount = 0
+        val semaphore = Semaphore(2)
         var completedSoFar = 0
 
-        unknownList.map { song ->
+        val jobs = unknownList.map { song ->
             async {
                 semaphore.withPermit {
-                    val result = autoFixSong(context, song)
+                    try {
+                        val result = autoFixSong(context, song)
 
-                    synchronized(this@AudioFingerprintFixer) {
-                        completedSoFar++
-                    }
-
-                    withContext(Dispatchers.Main) {
-                        onProgress(completedSoFar, total, song.title)
-                    }
-
-                    // Lower confidence acceptance to guarantee 100% of untagged songs get fixed
-                    if (result.matchConfidence >= 0.50f) {
-                        withContext(Dispatchers.Main) {
-                            onSongFixed(song, result)
-                        }
                         synchronized(this@AudioFingerprintFixer) {
-                            fixedCount++
+                            completedSoFar++
+                        }
+
+                        withContext(Dispatchers.Main) {
+                            onProgress(completedSoFar, total, song.title)
+                        }
+
+                        if (result.matchConfidence >= 0.50f) {
+                            withContext(Dispatchers.Main) {
+                                onSongFixed(song, result)
+                            }
+                            synchronized(this@AudioFingerprintFixer) {
+                                fixedCount++
+                            }
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        synchronized(this@AudioFingerprintFixer) {
+                            completedSoFar++
                         }
                     }
                 }
             }
-        }.awaitAll()
-
+        }
+        jobs.awaitAll()
         fixedCount
     }
 }

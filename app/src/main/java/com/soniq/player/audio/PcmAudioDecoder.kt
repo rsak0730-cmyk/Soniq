@@ -15,11 +15,14 @@ import java.util.zip.Deflater
 
 object PcmAudioDecoder {
 
-    // Optimized: Only decode the first 12 seconds instead of 120s (10x faster)
     private const val MAX_DECODE_DURATION_US = 12_000_000L
     private const val TIMEOUT_US = 2500L
 
     suspend fun extractFingerprintData(context: Context, audioUri: Uri): Pair<Int, String>? = withContext(Dispatchers.IO) {
+        // Prevent MediaExtractor crash on streaming/null URIs
+        val uriStr = audioUri.toString()
+        if (uriStr.isBlank() || uriStr.startsWith("http")) return@withContext null
+
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
 
