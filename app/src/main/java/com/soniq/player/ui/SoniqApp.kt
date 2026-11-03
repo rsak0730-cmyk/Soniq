@@ -64,6 +64,7 @@ import coil.request.ImageRequest
 import com.google.common.util.concurrent.MoreExecutors
 import com.soniq.player.audio.AudioDeviceMonitor
 import com.soniq.player.audio.AudioEffectsBridge
+import com.soniq.player.audio.AudioFingerprintFixer
 import com.soniq.player.audio.AudioOutput
 import com.soniq.player.audio.GyroscopeParallaxEngine
 import com.soniq.player.audio.RealtimeFftMonitor
@@ -112,6 +113,21 @@ private fun applySavedMetadataOverrides(rawSongs: List<Song>, prefs: SharedPrefe
     }.getOrDefault(rawSongs)
 }
 
+private fun saveMetadataOverride(prefs: SharedPreferences, songId: Long, title: String, artist: String, album: String, artUri: String?) {
+    runCatching {
+        val raw = prefs.getString("song_overrides", "{}") ?: "{}"
+        val root = JSONObject(raw)
+        val entry = JSONObject().apply {
+            put("title", title)
+            put("artist", artist)
+            put("album", album)
+            if (!artUri.isNullOrBlank()) put("art", artUri)
+        }
+        root.put(songId.toString(), entry)
+        prefs.edit().putString("song_overrides", root.toString()).apply()
+    }
+}
+
 @Composable
 fun SoniqApp() {
     val context = LocalContext.current
@@ -135,6 +151,12 @@ fun SoniqApp() {
     var recents by remember { mutableStateOf<List<String>>(prefs.getString("recents_ordered", "")?.split("|")?.filter { it.isNotBlank() } ?: emptyList()) }
     var searchHistory by remember { mutableStateOf<List<String>>(prefs.getString("search_history_ordered", "")?.split("|")?.filter { it.isNotBlank() }?.take(6) ?: emptyList()) }
 
+    var isBatchFixing by remember { mutableStateOf(false) }
+    var batchCurrent by remember { mutableIntStateOf(0) }
+    var batchTotal by remember { mutableIntStateOf(0) }
+    var batchTrackName by remember { mutableStateOf("") }
+    var batchSummary by remember { mutableStateOf<String?>(null) }
+
     var duplicateGroups by remember { mutableStateOf<List<DuplicateGroup>?>(null) }
     var isScanningDuplicates by remember { mutableStateOf(false) }
 
@@ -153,6 +175,7 @@ fun SoniqApp() {
     var timerMinutes by remember { mutableIntStateOf(0) }
     var customTimer by remember { mutableStateOf("25") }
     var timerLeft by remember { mutableIntStateOf(0) }
+    var editTagSong by remember { mutableStateOf<Song?>(null) }
     var libraryMode by remember { mutableStateOf("Songs") }
     val listState = rememberLazyListState()
     var selectedFilterKey by remember { mutableStateOf<String?>(null) }
@@ -248,6 +271,56 @@ fun SoniqApp() {
                 }
                 context.startActivity(fallback)
             }
+        }
+    }
+
+    fun triggerBatchFix() {
+        if (isBatchFixing) return
+        val unknownList = songs.filter { AudioFingerprintFixer.isSongUnknown(it) }
+        if (unknownList.isEmpty()) {
+            batchSummary = "All tracks in your library are already identified!"
+            return
+        }
+
+        scope.launch {
+            isBatchFixing = true
+            batchTotal = unknownList.size
+            batchCurrent = 0
+
+            val count = AudioFingerprintFixer.batchFixAllUnknown(
+                context = context,
+                songs = songs,
+                onProgress = { cur, tot, name ->
+                    batchCurrent = cur
+                    batchTotal = tot
+                    batchTrackName = name
+                },
+                onSongFixed = { song, fix ->
+                    val artUri = fix.albumArtUrl ?: song.albumArtUri
+                    saveMetadataOverride(prefs, song.id, fix.title, fix.artist, fix.album, artUri)
+
+                    songs = songs.map {
+                        if (it.id == song.id) it.copy(
+                            title = fix.title,
+                            artist = fix.artist,
+                            album = fix.album,
+                            albumArtUri = artUri
+                        ) else it
+                    }
+
+                    if (currentSong?.id == song.id) {
+                        currentSong = currentSong?.copy(
+                            title = fix.title,
+                            artist = fix.artist,
+                            album = fix.album,
+                            albumArtUri = artUri
+                        )
+                    }
+                }
+            )
+
+            isBatchFixing = false
+            batchSummary = "Auto-fix complete! Successfully matched and updated $count songs."
         }
     }
 
@@ -354,7 +427,6 @@ fun SoniqApp() {
                     .padding(bottom = bottomPadding)
                     .padding(horizontal = 16.dp)
             ) {
-                // Header
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -388,7 +460,6 @@ fun SoniqApp() {
                     }
                 }
 
-                // Search Bar
                 AnimatedVisibility(visible = currentTab == MainTab.HOME || currentTab == MainTab.LIBRARY) {
                     Column {
                         OutlinedTextField(
@@ -475,6 +546,7 @@ fun SoniqApp() {
                             },
                             onAddToPlaylist = { addToPlaylistSong = it },
                             onAddToAlbum = { addToAlbumSong = it },
+                            onEdit = { editTagSong = it },
                             onNavigateLibrary = { mode ->
                                 libraryMode = mode
                                 selectedFilterKey = null
@@ -502,6 +574,7 @@ fun SoniqApp() {
                                 raw.split("|").filter { it.isNotBlank() }.toSet()
                             },
                             onCreateAlbum = { showCreateAlbum = true },
+                            onAutoFixAll = { triggerBatchFix() },
                             onPlay = { song, list -> playSong(song, list) },
                             onFavorite = { song ->
                                 favorites = if (song.id.toString() in favorites) favorites - song.id.toString()
@@ -510,6 +583,7 @@ fun SoniqApp() {
                             },
                             onAddToPlaylist = { addToPlaylistSong = it },
                             onAddToAlbum = { addToAlbumSong = it },
+                            onEdit = { editTagSong = it },
                             modifier = Modifier.fillMaxSize()
                         )
                         MainTab.EQUALIZER -> EqualizerScreen(Modifier.fillMaxSize())
@@ -559,6 +633,7 @@ fun SoniqApp() {
                                 songs = applySavedMetadataOverrides(loaded, prefs)
                                 Toast.makeText(context, "Rescanned ${songs.size} tracks", Toast.LENGTH_SHORT).show()
                             },
+                            onAutoFixAll = { triggerBatchFix() },
                             onScanDuplicates = {
                                 if (!isScanningDuplicates) {
                                     scope.launch {
@@ -601,7 +676,6 @@ fun SoniqApp() {
                 )
             }
 
-            // Full Player Screen
             if (showPlayer && currentSong != null) {
                 val animatedOffsetY by animateFloatAsState(
                     targetValue = playerOffsetY,
@@ -679,7 +753,6 @@ fun SoniqApp() {
                 }
             }
 
-            // Duplicate Cleaner Results Dialog
             duplicateGroups?.let { groups ->
                 AlertDialog(
                     onDismissRequest = { duplicateGroups = null },
@@ -731,6 +804,15 @@ fun SoniqApp() {
                     }
                 )
             }
+
+            AutoFixBatchDialog(
+                isRunning = isBatchFixing,
+                current = batchCurrent,
+                total = batchTotal,
+                currentTrackTitle = batchTrackName,
+                summaryMessage = batchSummary,
+                onDismissSummary = { batchSummary = null }
+            )
 
             if (showCreatePlaylist) {
                 AlertDialog(
@@ -869,6 +951,34 @@ fun SoniqApp() {
                     confirmButton = {},
                     dismissButton = {
                         TextButton(onClick = { addToAlbumSong = null }) { Text("Cancel", color = MutedLavender) }
+                    }
+                )
+            }
+
+            editTagSong?.let { song ->
+                TagEditorAndFingerprintDialog(
+                    song = song,
+                    onDismiss = { editTagSong = null },
+                    onSave = { updatedTitle, updatedArtist, updatedAlbum, newArtUri ->
+                        val finalArt = newArtUri ?: song.albumArtUri
+                        saveMetadataOverride(prefs, song.id, updatedTitle, updatedArtist, updatedAlbum, finalArt)
+                        songs = songs.map {
+                            if (it.id == song.id) it.copy(
+                                title = updatedTitle,
+                                artist = updatedArtist,
+                                album = updatedAlbum,
+                                albumArtUri = finalArt
+                            ) else it
+                        }
+                        if (currentSong?.id == song.id) {
+                            currentSong = currentSong?.copy(
+                                title = updatedTitle,
+                                artist = updatedArtist,
+                                album = updatedAlbum,
+                                albumArtUri = finalArt
+                            )
+                        }
+                        editTagSong = null
                     }
                 )
             }
@@ -1070,7 +1180,7 @@ private fun LiquidOrbWaveformCenterpiece(
                 ),
                 radius = r - 2.dp.toPx(),
                 center = c,
-                style = Stroke((2.5.dp.toPx() + reactiveGlow).coerceAtMost(6.dp.toPx()))
+                style = Stroke((2.dp.toPx() + reactiveGlow).coerceAtMost(6.dp.toPx()))
             )
             val wavePath = Path()
             val amp = if (isPlaying) (12.dp.toPx() + fftBass * 16.dp.toPx()) else 5.dp.toPx()
@@ -1441,7 +1551,7 @@ private fun FullPlayer(
                     } else if (lyrics.isEmpty()) {
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Text(
-                                "No local .lrc lyrics found for '${song.title}'.\nPlace a matching .lrc file in the song folder.",
+                                "No synchronized lyrics found for '${song.title}'.",
                                 color = MutedLavender,
                                 fontSize = 13.sp,
                                 textAlign = TextAlign.Center
@@ -1604,7 +1714,6 @@ private fun FullPlayer(
 
             Spacer(Modifier.height(6.dp))
 
-            // Song Title & Favorite
             Row(
                 Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
@@ -1638,7 +1747,6 @@ private fun FullPlayer(
 
             Spacer(Modifier.height(6.dp))
 
-            // Transport Controls
             Row(
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceEvenly,
