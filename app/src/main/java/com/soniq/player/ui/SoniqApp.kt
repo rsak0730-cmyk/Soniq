@@ -148,7 +148,7 @@ fun SoniqApp() {
     var recents by remember { mutableStateOf<List<String>>(prefs.getString("recents_ordered", "")?.split("|")?.filter { it.isNotBlank() } ?: emptyList()) }
     var searchHistory by remember { mutableStateOf<List<String>>(prefs.getString("search_history_ordered", "")?.split("|")?.filter { it.isNotBlank() }?.take(6) ?: emptyList()) }
 
-    // Batch Auto-Fix state
+    // Batch Auto-Fix State
     var isBatchFixing by remember { mutableStateOf(false) }
     var batchCurrent by remember { mutableIntStateOf(0) }
     var batchTotal by remember { mutableIntStateOf(0) }
@@ -198,15 +198,15 @@ fun SoniqApp() {
 
     fun triggerBatchFix() {
         if (isBatchFixing) return
-        val unknownCount = songs.count { AudioFingerprintFixer.isSongUnknown(it) }
-        if (unknownCount == 0) {
+        val unknownList = songs.filter { AudioFingerprintFixer.isSongUnknown(it) }
+        if (unknownList.isEmpty()) {
             batchSummary = "All tracks in your library are already identified!"
             return
         }
 
         scope.launch {
             isBatchFixing = true
-            batchTotal = unknownCount
+            batchTotal = unknownList.size
             batchCurrent = 0
 
             val count = AudioFingerprintFixer.batchFixAllUnknown(
@@ -219,7 +219,10 @@ fun SoniqApp() {
                 },
                 onSongFixed = { song, fix ->
                     val artUri = fix.albumArtUrl?.let { url ->
-                        ArtworkScraper.saveDownloadedCoverToFile(context, song, url)
+                        scope.launch(Dispatchers.IO) {
+                            ArtworkScraper.saveDownloadedCoverToFile(context, song, url)
+                        }
+                        url
                     } ?: song.albumArtUri
 
                     saveMetadataOverride(prefs, song.id, fix.title, fix.artist, fix.album, artUri)
