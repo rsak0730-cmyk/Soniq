@@ -6,8 +6,8 @@
 package com.soniq.player.ui
 
 import android.content.ComponentName
-import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -71,6 +71,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import kotlin.math.*
 
 private val OLEDBlack = Color(0xFF06040A)
@@ -86,8 +87,42 @@ enum class MainTab(val label: String, val icon: ImageVector) {
     HOME("Home", Icons.Default.Home),
     LIBRARY("Library", Icons.Default.LibraryMusic),
     EQUALIZER("Equalizer", Icons.Default.Equalizer),
-    STATS("Stats", Icons.Default.BarChart),
+    PLAYLISTS("Playlists", Icons.Default.QueueMusic),
     SETTINGS("Settings", Icons.Default.Settings)
+}
+
+private fun applySavedMetadataOverrides(rawSongs: List<Song>, prefs: SharedPreferences): List<Song> {
+    val overridesJson = prefs.getString("song_overrides", null) ?: return rawSongs
+    return runCatching {
+        val root = JSONObject(overridesJson)
+        rawSongs.map { song ->
+            val key = song.id.toString()
+            if (root.has(key)) {
+                val obj = root.getJSONObject(key)
+                song.copy(
+                    title = obj.optString("title", song.title),
+                    artist = obj.optString("artist", song.artist),
+                    album = obj.optString("album", song.album),
+                    albumArtUri = obj.optString("art", "").ifBlank { song.albumArtUri }
+                )
+            } else song
+        }
+    }.getOrDefault(rawSongs)
+}
+
+private fun saveMetadataOverride(prefs: SharedPreferences, songId: Long, title: String, artist: String, album: String, artUri: String?) {
+    runCatching {
+        val raw = prefs.getString("song_overrides", "{}") ?: "{}"
+        val root = JSONObject(raw)
+        val entry = JSONObject().apply {
+            put("title", title)
+            put("artist", artist)
+            put("album", album)
+            if (!artUri.isNullOrBlank()) put("art", artUri)
+        }
+        root.put(songId.toString(), entry)
+        prefs.edit().putString("song_overrides", root.toString()).apply()
+    }
 }
 
 @Composable
@@ -96,7 +131,7 @@ fun SoniqApp() {
     val prefs = remember { context.getSharedPreferences("soniq_user_data", 0) }
     var songs by remember { mutableStateOf<List<Song>>(emptyList()) }
     var query by remember { mutableStateOf("") }
-    var currentTab by remember { mutableStateOf(MainTab.LIBRARY) }
+    var currentTab by remember { mutableStateOf(MainTab.HOME) }
     var controller by remember { mutableStateOf<MediaController?>(null) }
     var currentSong by remember { mutableStateOf<Song?>(null) }
     var isPlaying by remember { mutableStateOf(false) }
@@ -109,12 +144,23 @@ fun SoniqApp() {
     var dynamicSecondaryColor by remember { mutableStateOf(ElectricCyan) }
     var outputs by remember { mutableStateOf<List<AudioOutput>>(emptyList()) }
     var favorites by remember { mutableStateOf<Set<String>>(prefs.getStringSet("favorites", emptySet())?.toSet() ?: emptySet()) }
-    var recents by remember { mutableStateOf<Set<String>>(prefs.getStringSet("recents", emptySet())?.toSet() ?: emptySet()) }
-    var searchHistory by remember { mutableStateOf<List<String>>(prefs.getStringSet("search_history", emptySet())?.toList()?.take(8) ?: emptyList()) }
+    var recents by remember { mutableStateOf<List<String>>(prefs.getString("recents_ordered", "")?.split("|")?.filter { it.isNotBlank() } ?: emptyList()) }
+    var searchHistory by remember { mutableStateOf<List<String>>(prefs.getString("search_history_ordered", "")?.split("|")?.filter { it.isNotBlank() }?.take(6) ?: emptyList()) }
+
+    // Playlists state
+    var playlists by remember { mutableStateOf<List<String>>(prefs.getStringSet("playlists", setOf("Favorites", "Workout", "Late Night"))?.toList()?.sorted() ?: listOf("Favorites")) }
+    var selectedPlaylist by remember { mutableStateOf("Favorites") }
+    var playlistSongs by remember { mutableStateOf<Set<String>>(prefs.getString("playlist_Favorites", "")?.split("|")?.filter { it.isNotBlank() }?.toSet() ?: emptySet()) }
+    var showCreatePlaylist by remember { mutableStateOf(false) }
+    var newPlaylistName by remember { mutableStateOf("") }
+    var addToPlaylistSong by remember { mutableStateOf<Song?>(null) }
+
+    // Custom Albums state
     var customAlbums by remember { mutableStateOf<List<String>>(prefs.getStringSet("custom_albums", emptySet())?.toList()?.sorted() ?: emptyList()) }
     var showCreateAlbum by remember { mutableStateOf(false) }
     var newAlbumName by remember { mutableStateOf("") }
     var addToAlbumSong by remember { mutableStateOf<Song?>(null) }
+
     var timerMinutes by remember { mutableIntStateOf(0) }
     var customTimer by remember { mutableStateOf("25") }
     var timerLeft by remember { mutableIntStateOf(0) }
@@ -126,26 +172,38 @@ fun SoniqApp() {
 
     val gyroEngine = remember { GyroscopeParallaxEngine(context) }
     DisposableEffect(Unit) {
+        SonicStatsEngine.init(context)
         gyroEngine.start()
         onDispose { gyroEngine.stop() }
     }
 
-    BackHandler(enabled = showPlayer || selectedFilterKey != null) {
-        if (showPlayer) showPlayer = false else selectedFilterKey = null
+    BackHandler(enabled = showPlayer || selectedFilterKey != null || currentTab != MainTab.HOME) {
+        when {
+            showPlayer -> showPlayer = false
+            selectedFilterKey != null -> selectedFilterKey = null
+            currentTab != MainTab.HOME -> currentTab = MainTab.HOME
+        }
     }
 
     fun saveFavorites() { prefs.edit().putStringSet("favorites", favorites).apply() }
-    fun saveRecents() { prefs.edit().putStringSet("recents", recents).apply() }
+    fun saveRecents(updated: List<String>) { prefs.edit().putString("recents_ordered", updated.joinToString("|")).apply() }
 
-    fun playSong(song: Song, source: List<Song> = songs) {
+    fun playSong(song: Song, source: List<Song> = songs, openFullPlayer: Boolean = true) {
         val c = controller ?: return
         val queue = source.ifEmpty { songs }.ifEmpty { listOf(song) }
         val index = queue.indexOfFirst { it.id == song.id }.coerceAtLeast(0)
         c.setMediaItems(queue.map { s ->
-            MediaItem.Builder().setUri(s.uri).setMediaMetadata(
-                MediaMetadata.Builder().setTitle(s.title).setArtist(s.artist)
-                    .setAlbumTitle(s.album).setArtworkUri(s.albumArtUri?.let(Uri::parse)).build()
-            ).build()
+            MediaItem.Builder()
+                .setMediaId(s.id.toString())
+                .setUri(s.uri)
+                .setMediaMetadata(
+                    MediaMetadata.Builder()
+                        .setTitle(s.title)
+                        .setArtist(s.artist)
+                        .setAlbumTitle(s.album)
+                        .setArtworkUri(s.albumArtUri?.let(Uri::parse))
+                        .build()
+                ).build()
         }, index, 0L)
         c.prepare()
         c.play()
@@ -156,9 +214,10 @@ fun SoniqApp() {
 
         SonicStatsEngine.recordPlayEvent(song)
 
-        recents = (recents + song.id.toString()).toList().takeLast(30).toSet()
-        saveRecents()
-        showPlayer = true
+        val updatedRecents = (listOf(song.id.toString()) + recents.filterNot { it == song.id.toString() }).take(30)
+        recents = updatedRecents
+        saveRecents(updatedRecents)
+        if (openFullPlayer) showPlayer = true
     }
 
     fun launchPartyMode() {
@@ -175,7 +234,7 @@ fun SoniqApp() {
         }
     }
 
-    LaunchedEffect(currentSong?.id) {
+    LaunchedEffect(currentSong?.id, currentSong?.albumArtUri) {
         val song = currentSong ?: return@LaunchedEffect
         withContext(Dispatchers.IO) {
             val bytes = MusicRepository.extractEmbeddedPicture(context, song.uri)
@@ -197,7 +256,8 @@ fun SoniqApp() {
     }
 
     LaunchedEffect(Unit) {
-        songs = runCatching { MusicRepository(context).loadSongs() }.getOrDefault(emptyList())
+        val loaded = runCatching { MusicRepository(context).loadSongs() }.getOrDefault(emptyList())
+        songs = applySavedMetadataOverrides(loaded, prefs)
     }
 
     DisposableEffect(context) {
@@ -214,8 +274,11 @@ fun SoniqApp() {
                 c.addListener(object : Player.Listener {
                     override fun onIsPlayingChanged(value: Boolean) { isPlaying = value }
                     override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
+                        val idStr = item?.mediaId
                         val title = item?.mediaMetadata?.title?.toString()
-                        currentSong = songs.firstOrNull { it.title == title } ?: currentSong
+                        currentSong = songs.firstOrNull { it.id.toString() == idStr }
+                            ?: songs.firstOrNull { it.title == title }
+                            ?: currentSong
                     }
                     override fun onPlaybackStateChanged(state: Int) {
                         duration = c.duration.coerceAtLeast(0L)
@@ -226,15 +289,17 @@ fun SoniqApp() {
         onDispose { MediaController.releaseFuture(future) }
     }
 
-    LaunchedEffect(controller) {
+    LaunchedEffect(controller, songs) {
         while (true) {
             controller?.let { c ->
                 position = c.currentPosition.coerceAtLeast(0L)
                 duration = c.duration.coerceAtLeast(0L)
                 isPlaying = c.isPlaying
-                if (c.currentMediaItem != null && currentSong == null) {
+                if (c.currentMediaItem != null && currentSong == null && songs.isNotEmpty()) {
+                    val idStr = c.currentMediaItem?.mediaId
                     val title = c.currentMediaItem?.mediaMetadata?.title?.toString()
-                    currentSong = songs.firstOrNull { it.title == title }
+                    currentSong = songs.firstOrNull { it.id.toString() == idStr }
+                        ?: songs.firstOrNull { it.title == title }
                 }
             }
             delay(150)
@@ -264,13 +329,16 @@ fun SoniqApp() {
                 roll = gyroEngine.roll
             )
 
+            val bottomPadding = if (currentSong != null) 154.dp else 86.dp
+
             Column(
                 Modifier
                     .fillMaxSize()
                     .statusBarsPadding()
-                    .padding(bottom = 86.dp)
+                    .padding(bottom = bottomPadding)
                     .padding(horizontal = 16.dp)
             ) {
+                // Top Brand Header
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -283,63 +351,98 @@ fun SoniqApp() {
                             color = Color.White,
                             fontSize = 28.sp,
                             fontWeight = FontWeight.Black,
-                            letterSpacing = 1.2.sp
+                            letterSpacing = 1.4.sp
                         )
                         Text("Liquid Gyro Acoustics • Party Sync", color = MutedLavender, fontSize = 11.sp)
                     }
 
-                    BouncyIconButton(onClick = { launchPartyMode() }) {
-                        Icon(Icons.Default.Headphones, contentDescription = "Dual Headphone Party Share", tint = dynamicSecondaryColor)
-                    }
-
-                    if (currentSong != null) {
-                        BouncyIconButton(onClick = { showPlayer = true }) {
-                            Icon(Icons.Default.GraphicEq, contentDescription = "Now Playing", tint = dynamicSecondaryColor)
+                    Surface(
+                        color = GlassPill,
+                        shape = RoundedCornerShape(20.dp),
+                        border = BorderStroke(1.dp, GlassBorder),
+                        modifier = Modifier.clickable { launchPartyMode() }
+                    ) {
+                        Row(
+                            Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.Headphones, contentDescription = "Party Share", tint = dynamicSecondaryColor, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Party", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
 
-                OutlinedTextField(
-                    value = query,
-                    onValueChange = {
-                        query = it
-                        if (it.length >= 2) {
-                            searchHistory = (listOf(it) + searchHistory.filterNot { old -> old == it }).take(8)
-                            prefs.edit().putStringSet("search_history", searchHistory.toSet()).apply()
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    placeholder = {
-                        Text(
-                            "Search songs, artists, albums, folders...",
-                            color = MutedLavender.copy(alpha = 0.6f),
-                            fontSize = 13.sp
+                // Contextual Search Bar (Only shown on Home & Library tabs)
+                AnimatedVisibility(visible = currentTab == MainTab.HOME || currentTab == MainTab.LIBRARY) {
+                    Column {
+                        OutlinedTextField(
+                            value = query,
+                            onValueChange = {
+                                query = it
+                                if (it.isNotBlank() && currentTab == MainTab.HOME) {
+                                    currentTab = MainTab.LIBRARY
+                                }
+                                if (it.trim().length >= 3) {
+                                    val clean = it.trim()
+                                    searchHistory = (listOf(clean) + searchHistory.filterNot { old -> old.equals(clean, true) }).take(6)
+                                    prefs.edit().putString("search_history_ordered", searchHistory.joinToString("|")).apply()
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            placeholder = {
+                                Text(
+                                    "Search songs, artists, albums, folders...",
+                                    color = MutedLavender.copy(alpha = 0.6f),
+                                    fontSize = 13.sp
+                                )
+                            },
+                            leadingIcon = { Icon(Icons.Default.Search, null, tint = dynamicSecondaryColor) },
+                            trailingIcon = {
+                                if (query.isNotEmpty()) {
+                                    IconButton(onClick = { query = "" }) { Icon(Icons.Default.Close, "Clear", tint = MutedLavender) }
+                                }
+                            },
+                            singleLine = true,
+                            shape = RoundedCornerShape(26.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = dynamicSecondaryColor,
+                                unfocusedBorderColor = GlassBorder,
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White,
+                                cursorColor = dynamicSecondaryColor,
+                                focusedContainerColor = Color(0x6618102C),
+                                unfocusedContainerColor = Color(0x44140D26)
+                            )
                         )
-                    },
-                    leadingIcon = { Icon(Icons.Default.Search, null, tint = dynamicSecondaryColor) },
-                    trailingIcon = {
-                        if (query.isNotEmpty()) {
-                            IconButton(onClick = { query = "" }) { Icon(Icons.Default.Close, "Clear", tint = MutedLavender) }
-                        }
-                    },
-                    singleLine = true,
-                    shape = RoundedCornerShape(26.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = dynamicSecondaryColor,
-                        unfocusedBorderColor = GlassBorder,
-                        focusedTextColor = Color.White,
-                        unfocusedTextColor = Color.White,
-                        cursorColor = dynamicSecondaryColor,
-                        focusedContainerColor = Color(0x6618102C),
-                        unfocusedContainerColor = Color(0x44140D26)
-                    )
-                )
 
-                Spacer(Modifier.height(10.dp))
+                        if (query.isEmpty() && searchHistory.isNotEmpty() && currentTab == MainTab.LIBRARY) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState())
+                                    .padding(top = 6.dp),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.History, null, tint = MutedLavender.copy(alpha = 0.6f), modifier = Modifier.size(14.dp))
+                                searchHistory.forEach { term ->
+                                    SuggestionChip(
+                                        onClick = { query = term },
+                                        label = { Text(term, fontSize = 11.sp, color = MutedLavender) },
+                                        shape = RoundedCornerShape(14.dp),
+                                        border = BorderStroke(0.8.dp, GlassBorder)
+                                    )
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(8.dp))
+                    }
+                }
 
                 AnimatedContent(
                     targetState = currentTab,
-                    transitionSpec = { fadeIn(tween(250)) togetherWith fadeOut(tween(200)) },
+                    transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(180)) },
                     label = "screen_transition"
                 ) { target ->
                     when (target) {
@@ -347,8 +450,20 @@ fun SoniqApp() {
                             songs = songs,
                             recents = recents,
                             favorites = favorites,
-                            onPlay = { playSong(it, songs) },
-                            onNavigateLibrary = { currentTab = MainTab.LIBRARY }
+                            onPlay = { song, list -> playSong(song, list) },
+                            onFavorite = { song ->
+                                favorites = if (song.id.toString() in favorites) favorites - song.id.toString()
+                                else favorites + song.id.toString()
+                                saveFavorites()
+                            },
+                            onAddToPlaylist = { addToPlaylistSong = it },
+                            onAddToAlbum = { addToAlbumSong = it },
+                            onEdit = { editTagSong = it },
+                            onNavigateLibrary = { mode ->
+                                libraryMode = mode
+                                selectedFilterKey = null
+                                currentTab = MainTab.LIBRARY
+                            }
                         )
                         MainTab.LIBRARY -> LibraryScreen(
                             allSongs = songs,
@@ -363,6 +478,8 @@ fun SoniqApp() {
                             listState = listState,
                             favorites = favorites,
                             recents = recents,
+                            playlistName = selectedPlaylist,
+                            playlistSongs = playlistSongs,
                             customAlbums = customAlbums,
                             getCustomAlbumSongs = { albumName ->
                                 val raw = prefs.getString("album_$albumName", "") ?: ""
@@ -375,17 +492,43 @@ fun SoniqApp() {
                                 else favorites + song.id.toString()
                                 saveFavorites()
                             },
+                            onAddToPlaylist = { addToPlaylistSong = it },
                             onAddToAlbum = { addToAlbumSong = it },
                             onEdit = { editTagSong = it },
                             modifier = Modifier.fillMaxSize()
                         )
                         MainTab.EQUALIZER -> EqualizerScreen(Modifier.fillMaxSize())
-                        MainTab.STATS -> {
-                            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-                                SonicHeatmapView()
-                                Spacer(Modifier.height(16.dp))
-                            }
-                        }
+                        MainTab.PLAYLISTS -> PlaylistScreen(
+                            playlists = playlists,
+                            selected = selectedPlaylist,
+                            allSongs = songs,
+                            getPlaylistTrackIds = { name ->
+                                if (name == "Favorites") favorites
+                                else prefs.getString("playlist_$name", "")?.split("|")?.filter { it.isNotBlank() }?.toSet() ?: emptySet()
+                            },
+                            onOpen = { name ->
+                                selectedPlaylist = name
+                                playlistSongs = if (name == "Favorites") favorites
+                                else prefs.getString("playlist_$name", "")?.split("|")?.filter { it.isNotBlank() }?.toSet() ?: emptySet()
+                                libraryMode = "Playlist"
+                                selectedFilterKey = null
+                                currentTab = MainTab.LIBRARY
+                            },
+                            onPlayAll = { name ->
+                                val ids = if (name == "Favorites") favorites
+                                else prefs.getString("playlist_$name", "")?.split("|")?.filter { it.isNotBlank() }?.toSet() ?: emptySet()
+                                val list = songs.filter { it.id.toString() in ids }
+                                if (list.isNotEmpty()) playSong(list.first(), list)
+                            },
+                            onDelete = { name ->
+                                if (name != "Favorites") {
+                                    playlists = playlists - name
+                                    prefs.edit().putStringSet("playlists", playlists.toSet()).remove("playlist_$name").apply()
+                                }
+                            },
+                            onCreate = { showCreatePlaylist = true },
+                            modifier = Modifier.fillMaxSize()
+                        )
                         MainTab.SETTINGS -> SettingsScreen(
                             songCount = songs.size,
                             outputs = outputs,
@@ -395,7 +538,10 @@ fun SoniqApp() {
                             onCustomTimerChange = { customTimer = it },
                             onSetTimer = { timerMinutes = it },
                             onCancelTimer = { timerMinutes = 0 },
-                            onRescan = { songs = MusicRepository(context).loadSongs() },
+                            onRescan = {
+                                val loaded = MusicRepository(context).loadSongs()
+                                songs = applySavedMetadataOverrides(loaded, prefs)
+                            },
                             onLaunchDualAudio = { launchPartyMode() },
                             modifier = Modifier.fillMaxSize()
                         )
@@ -403,12 +549,27 @@ fun SoniqApp() {
                 }
             }
 
-            Box(
+            // Bottom Dock: Mini-Player + Navigation Bar
+            Column(
                 Modifier
                     .align(Alignment.BottomCenter)
                     .navigationBarsPadding()
-                    .padding(horizontal = 18.dp, vertical = 12.dp)
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                if (currentSong != null && !showPlayer) {
+                    FloatingMiniPlayer(
+                        song = currentSong!!,
+                        isPlaying = isPlaying,
+                        progress = if (duration > 0) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f,
+                        primaryColor = dynamicPrimaryColor,
+                        secondaryColor = dynamicSecondaryColor,
+                        onOpen = { showPlayer = true },
+                        onPlayPause = { controller?.let { if (it.isPlaying) it.pause() else it.play() } },
+                        onNext = { controller?.seekToNextMediaItem() }
+                    )
+                }
+
                 FloatingBottomNavBar(
                     currentTab = currentTab,
                     activeColor = dynamicSecondaryColor,
@@ -416,6 +577,7 @@ fun SoniqApp() {
                 )
             }
 
+            // Full Screen Player Overlay
             if (showPlayer && currentSong != null) {
                 val animatedOffsetY by animateFloatAsState(
                     targetValue = playerOffsetY,
@@ -432,7 +594,7 @@ fun SoniqApp() {
                                 playerOffsetY = (playerOffsetY + delta).coerceAtLeast(0f)
                             },
                             onDragStopped = {
-                                if (playerOffsetY > 380f) {
+                                if (playerOffsetY > 340f) {
                                     showPlayer = false
                                 }
                                 playerOffsetY = 0f
@@ -446,6 +608,7 @@ fun SoniqApp() {
                         duration = duration,
                         shuffle = shuffle,
                         repeatMode = repeatMode,
+                        isFavorite = currentSong!!.id.toString() in favorites,
                         primaryAccent = dynamicPrimaryColor,
                         secondaryAccent = dynamicSecondaryColor,
                         gyroPitch = gyroEngine.pitch,
@@ -464,17 +627,99 @@ fun SoniqApp() {
                             }
                             controller?.repeatMode = repeatMode
                         },
+                        onToggleFavorite = {
+                            val id = currentSong!!.id.toString()
+                            favorites = if (id in favorites) favorites - id else favorites + id
+                            saveFavorites()
+                        },
                         onLaunchParty = { launchPartyMode() },
-                        onQueue = { currentTab = MainTab.LIBRARY; showPlayer = false }
+                        onOpenEqualizer = {
+                            showPlayer = false
+                            currentTab = MainTab.EQUALIZER
+                        }
                     )
                 }
             }
 
+            // Create Playlist Dialog
+            if (showCreatePlaylist) {
+                AlertDialog(
+                    onDismissRequest = { showCreatePlaylist = false },
+                    containerColor = Color(0xFF1E1436),
+                    title = { Text("Create New Playlist", color = Color.White) },
+                    text = {
+                        OutlinedTextField(
+                            value = newPlaylistName,
+                            onValueChange = { newPlaylistName = it },
+                            label = { Text("Playlist Name", color = MutedLavender) },
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White,
+                                focusedBorderColor = ElectricCyan
+                            )
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            val name = newPlaylistName.trim()
+                            if (name.isNotEmpty()) {
+                                playlists = (playlists + name).distinct().sorted()
+                                prefs.edit().putStringSet("playlists", playlists.toSet()).apply()
+                                prefs.edit().putString("playlist_$name", "").apply()
+                            }
+                            newPlaylistName = ""
+                            showCreatePlaylist = false
+                        }) { Text("Create", color = ElectricCyan) }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showCreatePlaylist = false }) { Text("Cancel", color = MutedLavender) }
+                    }
+                )
+            }
+
+            // Add Song to Playlist Dialog
+            addToPlaylistSong?.let { song ->
+                AlertDialog(
+                    onDismissRequest = { addToPlaylistSong = null },
+                    containerColor = Color(0xFF1E1436),
+                    title = { Text("Add to Playlist", color = Color.White) },
+                    text = {
+                        Column {
+                            playlists.forEach { name ->
+                                TextButton(
+                                    onClick = {
+                                        if (name == "Favorites") {
+                                            favorites = favorites + song.id.toString()
+                                            saveFavorites()
+                                        } else {
+                                            val raw = prefs.getString("playlist_$name", "") ?: ""
+                                            val ids = raw.split("|").filter { it.isNotBlank() }.toSet() + song.id.toString()
+                                            prefs.edit().putString("playlist_$name", ids.joinToString("|")).apply()
+                                            if (name == selectedPlaylist) playlistSongs = ids
+                                        }
+                                        addToPlaylistSong = null
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(name, color = ElectricCyan)
+                                }
+                            }
+                        }
+                    },
+                    confirmButton = {},
+                    dismissButton = {
+                        TextButton(onClick = { addToPlaylistSong = null }) { Text("Cancel", color = MutedLavender) }
+                    }
+                )
+            }
+
+            // Create Album Dialog
             if (showCreateAlbum) {
                 AlertDialog(
                     onDismissRequest = { showCreateAlbum = false },
                     containerColor = Color(0xFF1E1436),
-                    title = { Text("Create New Album", color = Color.White) },
+                    title = { Text("Create Custom Album", color = Color.White) },
                     text = {
                         OutlinedTextField(
                             value = newAlbumName,
@@ -513,7 +758,7 @@ fun SoniqApp() {
                     title = { Text("Add Track to Album", color = Color.White) },
                     text = {
                         if (customAlbums.isEmpty()) {
-                            Text("No custom albums created yet. Click '+ Album' in the Albums tab to create one.", color = MutedLavender)
+                            Text("No custom albums created yet. Tap '+ Album' in the Albums tab to create one.", color = MutedLavender)
                         } else {
                             Column {
                                 for (albName in customAlbums) {
@@ -545,17 +790,102 @@ fun SoniqApp() {
                     song = song,
                     onDismiss = { editTagSong = null },
                     onSave = { updatedTitle, updatedArtist, updatedAlbum, newArtUri ->
+                        val finalArt = newArtUri ?: song.albumArtUri
+                        saveMetadataOverride(prefs, song.id, updatedTitle, updatedArtist, updatedAlbum, finalArt)
                         songs = songs.map {
                             if (it.id == song.id) it.copy(
                                 title = updatedTitle,
                                 artist = updatedArtist,
                                 album = updatedAlbum,
-                                albumArtUri = newArtUri ?: it.albumArtUri
+                                albumArtUri = finalArt
                             ) else it
+                        }
+                        if (currentSong?.id == song.id) {
+                            currentSong = currentSong?.copy(
+                                title = updatedTitle,
+                                artist = updatedArtist,
+                                album = updatedAlbum,
+                                albumArtUri = finalArt
+                            )
                         }
                         editTagSong = null
                     }
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun FloatingMiniPlayer(
+    song: Song,
+    isPlaying: Boolean,
+    progress: Float,
+    primaryColor: Color,
+    secondaryColor: Color,
+    onOpen: () -> Unit,
+    onPlayPause: () -> Unit,
+    onNext: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(62.dp)
+            .clickable { onOpen() },
+        shape = RoundedCornerShape(22.dp),
+        color = Color(0xEE160E2E),
+        border = BorderStroke(1.2.dp, secondaryColor.copy(alpha = 0.55f))
+    ) {
+        Column(Modifier.fillMaxSize()) {
+            LinearProgressIndicator(
+                progress = { progress },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(2.5.dp),
+                color = secondaryColor,
+                trackColor = Color.Transparent
+            )
+            Row(
+                Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                SongThumb(song = song, modifier = Modifier.size(42.dp))
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        song.title,
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        song.artist,
+                        color = MutedLavender,
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                IconButton(onClick = onPlayPause) {
+                    Icon(
+                        if (isPlaying) Icons.Default.PauseCircleFilled else Icons.Default.PlayCircleFilled,
+                        contentDescription = "Play/Pause",
+                        tint = secondaryColor,
+                        modifier = Modifier.size(32.dp)
+                    )
+                }
+                IconButton(onClick = onNext) {
+                    Icon(
+                        Icons.Default.SkipNext,
+                        contentDescription = "Next",
+                        tint = Color.White,
+                        modifier = Modifier.size(26.dp)
+                    )
+                }
             }
         }
     }
@@ -793,6 +1123,7 @@ private fun FullPlayer(
     duration: Long,
     shuffle: Boolean,
     repeatMode: Int,
+    isFavorite: Boolean,
     primaryAccent: Color,
     secondaryAccent: Color,
     gyroPitch: Float,
@@ -804,8 +1135,9 @@ private fun FullPlayer(
     onSeek: (Long) -> Unit,
     onShuffle: () -> Unit,
     onRepeat: () -> Unit,
+    onToggleFavorite: () -> Unit,
     onLaunchParty: () -> Unit,
-    onQueue: () -> Unit
+    onOpenEqualizer: () -> Unit
 ) {
     val context = LocalContext.current
     val view = LocalView.current
@@ -880,11 +1212,12 @@ private fun FullPlayer(
                 BouncyIconButton(onClick = onLaunchParty) {
                     Icon(Icons.Default.Headphones, contentDescription = "Dual Headphone Share", tint = secondaryAccent)
                 }
-
                 BouncyIconButton(onClick = { showLyrics = !showLyrics }) {
                     Icon(Icons.Default.Lyrics, contentDescription = "Lyrics", tint = if (showLyrics) secondaryAccent else MutedLavender)
                 }
-                BouncyIconButton(onClick = onQueue) { Icon(Icons.Default.QueueMusic, null, tint = secondaryAccent) }
+                BouncyIconButton(onClick = onOpenEqualizer) {
+                    Icon(Icons.Default.Equalizer, contentDescription = "Stems & Equalizer", tint = secondaryAccent)
+                }
             }
 
             Spacer(Modifier.height(8.dp))
@@ -901,7 +1234,7 @@ private fun FullPlayer(
                 ) {
                     if (lyrics.isEmpty()) {
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text("No local .lrc lyrics file found.", color = MutedLavender, fontSize = 14.sp)
+                            Text("No local .lrc lyrics file found for this track.", color = MutedLavender, fontSize = 14.sp)
                         }
                     } else {
                         LazyColumn(state = lyricsListState, modifier = Modifier.fillMaxSize()) {
@@ -933,8 +1266,7 @@ private fun FullPlayer(
                     var baseRadiusPx by remember { mutableFloatStateOf(0f) }
                     var isDraggingSeeker by remember { mutableStateOf(false) }
 
-                    // Seek gesture boundary check: only scrub if touch lands directly on the ring edge
-                    val touchZoneTolerancePx = with(density) { 32.dp.toPx() }
+                    val touchZoneTolerancePx = with(density) { 26.dp.toPx() }
 
                     Canvas(
                         Modifier
@@ -944,7 +1276,6 @@ private fun FullPlayer(
                                     val dx = tapOffset.x - canvasCenter.x
                                     val dy = tapOffset.y - canvasCenter.y
                                     val dist = hypot(dx, dy)
-                                    // Verify touch landed strictly on the outer circular track
                                     if (abs(dist - baseRadiusPx) <= touchZoneTolerancePx && duration > 0) {
                                         var angle = Math.toDegrees(atan2(dy.toDouble(), dx.toDouble())).toFloat() + 90f
                                         if (angle < 0) angle += 360f
@@ -982,13 +1313,11 @@ private fun FullPlayer(
                             }
                     ) {
                         canvasCenter = center
-                        // Streamlined dimensions for a thin, premium aesthetic
-                        val strokeWidth = 3.5.dp.toPx()
-                        val outerGlowWidth = 8.dp.toPx()
+                        val strokeWidth = 3.2.dp.toPx()
+                        val outerGlowWidth = 7.dp.toPx()
                         val baseRadius = (size.width - 24.dp.toPx()) / 2f
                         baseRadiusPx = baseRadius
 
-                        // Background subtle guideline track
                         drawCircle(
                             color = Color(0x352B194E),
                             radius = baseRadius,
@@ -1000,8 +1329,7 @@ private fun FullPlayer(
                         if (sweepAngle > 0f) {
                             val wavePath = Path()
                             val steps = (sweepAngle * 1.5f).toInt().coerceAtLeast(8)
-                            // Subtle liquid undulation instead of huge offsets
-                            val waveAmplitude = if (isPlaying) (1.2.dp.toPx() + fftBass * 1.8.dp.toPx()) else 0.8.dp.toPx()
+                            val waveAmplitude = if (isPlaying) (1.1.dp.toPx() + fftBass * 1.6.dp.toPx()) else 0.7.dp.toPx()
                             val waveFreq = 10.0
                             var tipX = center.x
                             var tipY = center.y
@@ -1020,7 +1348,6 @@ private fun FullPlayer(
                                 }
                             }
 
-                            // Thin delicate ambient bloom
                             drawPath(
                                 path = wavePath,
                                 brush = Brush.sweepGradient(
@@ -1033,7 +1360,6 @@ private fun FullPlayer(
                                 style = Stroke(outerGlowWidth, cap = StrokeCap.Round, join = StrokeJoin.Round)
                             )
 
-                            // Thin core liquid arc
                             drawPath(
                                 path = wavePath,
                                 brush = Brush.sweepGradient(
@@ -1044,8 +1370,7 @@ private fun FullPlayer(
                                 style = Stroke(strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round)
                             )
 
-                            // Sleek pearl tip indicator
-                            val dropletRadius = (3.5.dp.toPx() + fftBass * 1.5.dp.toPx())
+                            val dropletRadius = (3.5.dp.toPx() + fftBass * 1.4.dp.toPx())
                             drawCircle(color = secondaryAccent.copy(alpha = 0.4f * pulseGlow), radius = dropletRadius + 3.dp.toPx(), center = Offset(tipX, tipY))
                             drawCircle(color = Color.White, radius = dropletRadius, center = Offset(tipX, tipY))
                             drawCircle(color = secondaryAccent, radius = (dropletRadius * 0.5f), center = Offset(tipX, tipY))
@@ -1072,11 +1397,26 @@ private fun FullPlayer(
                 }
             }
 
-            Spacer(Modifier.height(12.dp))
-            Text(song.title, color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Black, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(song.artist, color = MutedLavender, fontSize = 13.sp)
-
             Spacer(Modifier.height(10.dp))
+
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(song.title, color = Color.White, fontSize = 21.sp, fontWeight = FontWeight.Black, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("${song.artist} • ${song.album}", color = MutedLavender, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                IconButton(onClick = onToggleFavorite) {
+                    Icon(
+                        if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                        contentDescription = "Favorite",
+                        tint = if (isFavorite) Color(0xFFFF5286) else MutedLavender
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
             WaveformSeekScrubber(
                 position = position,
                 duration = duration,
@@ -1190,8 +1530,8 @@ private fun FloatingBottomNavBar(
     Surface(
         modifier = modifier
             .fillMaxWidth()
-            .height(66.dp),
-        shape = RoundedCornerShape(33.dp),
+            .height(64.dp),
+        shape = RoundedCornerShape(32.dp),
         color = Color(0xEE100A24),
         border = BorderStroke(1.2.dp, GlassBorder)
     ) {
@@ -1203,13 +1543,13 @@ private fun FloatingBottomNavBar(
             MainTab.entries.forEach { tab ->
                 val selected = currentTab == tab
                 val animScale by animateFloatAsState(
-                    targetValue = if (selected) 1.20f else 1f,
+                    targetValue = if (selected) 1.15f else 1f,
                     animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
                     label = "tab_scale"
                 )
                 BouncyButton(
                     onClick = { onSelect(tab) },
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
                 ) {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -1219,17 +1559,14 @@ private fun FloatingBottomNavBar(
                             tab.icon,
                             contentDescription = tab.label,
                             tint = if (selected) activeColor else MutedLavender.copy(alpha = 0.5f),
-                            modifier = Modifier.size(24.dp)
+                            modifier = Modifier.size(22.dp)
                         )
-                        if (selected) {
-                            Box(
-                                Modifier
-                                    .padding(top = 4.dp)
-                                    .size(4.dp)
-                                    .clip(CircleShape)
-                                    .background(activeColor)
-                            )
-                        }
+                        Text(
+                            tab.label,
+                            color = if (selected) activeColor else MutedLavender.copy(alpha = 0.5f),
+                            fontSize = 9.sp,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+                        )
                     }
                 }
             }
@@ -1240,83 +1577,132 @@ private fun FloatingBottomNavBar(
 @Composable
 private fun HomeScreen(
     songs: List<Song>,
-    recents: Set<String>,
+    recents: List<String>,
     favorites: Set<String>,
-    onPlay: (Song) -> Unit,
-    onNavigateLibrary: () -> Unit
+    onPlay: (Song, List<Song>) -> Unit,
+    onFavorite: (Song) -> Unit,
+    onAddToPlaylist: (Song) -> Unit,
+    onAddToAlbum: (Song) -> Unit,
+    onEdit: (Song) -> Unit,
+    onNavigateLibrary: (String) -> Unit
 ) {
+    val songMap = remember(songs) { songs.associateBy { it.id.toString() } }
     val recentSongs = remember(songs, recents) {
-        songs.filter { it.id.toString() in recents }.take(6)
+        recents.mapNotNull { songMap[it] }.take(5)
     }
     val favSongs = remember(songs, favorites) {
-        songs.filter { it.id.toString() in favorites }.take(6)
+        songs.filter { it.id.toString() in favorites }.take(5)
     }
-    val lastAddedSongs = remember(songs) { songs.sortedByDescending { it.dateAdded }.take(6) }
+    val lastAddedSongs = remember(songs) { songs.sortedByDescending { it.dateAdded }.take(5) }
 
     Column(
         Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(vertical = 12.dp)
+            .padding(vertical = 8.dp)
     ) {
+        // Quick Library Metrics Bar (Clickable shortcuts)
         Surface(
             color = GlassPill,
-            shape = RoundedCornerShape(26.dp),
+            shape = RoundedCornerShape(24.dp),
             border = BorderStroke(1.2.dp, GlassBorder),
             modifier = Modifier.fillMaxWidth()
         ) {
             Row(
-                Modifier.padding(18.dp),
+                Modifier.padding(16.dp),
                 horizontalArrangement = Arrangement.SpaceAround,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("${songs.size}", color = ElectricCyan, fontSize = 24.sp, fontWeight = FontWeight.Black)
-                    Text("Tracks", color = MutedLavender, fontSize = 12.sp)
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.clickable { onNavigateLibrary("Songs") }
+                ) {
+                    Text("${songs.size}", color = ElectricCyan, fontSize = 22.sp, fontWeight = FontWeight.Black)
+                    Text("All Tracks", color = MutedLavender, fontSize = 11.sp)
                 }
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("${favorites.size}", color = NeonPurple, fontSize = 24.sp, fontWeight = FontWeight.Black)
-                    Text("Favorites", color = MutedLavender, fontSize = 12.sp)
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.clickable { onNavigateLibrary("Favorites") }
+                ) {
+                    Text("${favorites.size}", color = NeonPurple, fontSize = 22.sp, fontWeight = FontWeight.Black)
+                    Text("Favorites", color = MutedLavender, fontSize = 11.sp)
                 }
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("${songs.map { it.artist }.distinct().size}", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Black)
-                    Text("Artists", color = MutedLavender, fontSize = 12.sp)
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.clickable { onNavigateLibrary("Artists") }
+                ) {
+                    Text("${songs.map { it.artist }.distinct().size}", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Black)
+                    Text("Artists", color = MutedLavender, fontSize = 11.sp)
                 }
             }
         }
 
-        Spacer(Modifier.height(18.dp))
+        Spacer(Modifier.height(14.dp))
 
-        SonicHeatmapView()
+        // Unified Sonic Heatmap & Listening Analytics
+        SonicHeatmapView(showClearButton = true)
 
-        Spacer(Modifier.height(18.dp))
-        Text("SMART: NEWLY DISCOVERED (LAST 30 DAYS)", color = AquaGlow, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-        Spacer(Modifier.height(8.dp))
-        lastAddedSongs.forEach { song ->
-            SongCard(song, song.id.toString() in favorites, { onPlay(song) }, {}, {}, {})
-            Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(16.dp))
+
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("RECENTLY PLAYED", color = ElectricCyan, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            if (recentSongs.isNotEmpty()) {
+                TextButton(onClick = { onNavigateLibrary("Recent") }) {
+                    Text("See All", color = ElectricCyan, fontSize = 11.sp)
+                }
+            }
         }
-
-        Spacer(Modifier.height(18.dp))
-        Text("RECENTLY PLAYED", color = ElectricCyan, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-        Spacer(Modifier.height(8.dp))
         if (recentSongs.isEmpty()) {
-            Text("No recently played songs yet.", color = MutedLavender, fontSize = 12.sp)
+            Text("Play any track to populate your recent timeline.", color = MutedLavender, fontSize = 12.sp)
         } else {
             recentSongs.forEach { song ->
-                SongCard(song, song.id.toString() in favorites, { onPlay(song) }, {}, {}, {})
+                SongCard(
+                    song = song,
+                    favorite = song.id.toString() in favorites,
+                    onPlay = { onPlay(song, recentSongs) },
+                    onFavorite = { onFavorite(song) },
+                    onAddToPlaylist = { onAddToPlaylist(song) },
+                    onAddToAlbum = { onAddToAlbum(song) },
+                    onEdit = { onEdit(song) }
+                )
                 Spacer(Modifier.height(6.dp))
             }
         }
 
-        Spacer(Modifier.height(18.dp))
-        Text("FAVORITE TRACKS", color = NeonPurple, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-        Spacer(Modifier.height(8.dp))
-        if (favSongs.isEmpty()) {
-            Text("No favorites added yet.", color = MutedLavender, fontSize = 12.sp)
-        } else {
+        Spacer(Modifier.height(14.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("NEWLY DISCOVERED", color = AquaGlow, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            TextButton(onClick = { onNavigateLibrary("Songs") }) {
+                Text("Browse All", color = AquaGlow, fontSize = 11.sp)
+            }
+        }
+        lastAddedSongs.forEach { song ->
+            SongCard(
+                song = song,
+                favorite = song.id.toString() in favorites,
+                onPlay = { onPlay(song, lastAddedSongs) },
+                onFavorite = { onFavorite(song) },
+                onAddToPlaylist = { onAddToPlaylist(song) },
+                onAddToAlbum = { onAddToAlbum(song) },
+                onEdit = { onEdit(song) }
+            )
+            Spacer(Modifier.height(6.dp))
+        }
+
+        if (favSongs.isNotEmpty()) {
+            Spacer(Modifier.height(14.dp))
+            Text("FAVORITE ROTATION", color = NeonPurple, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            Spacer(Modifier.height(6.dp))
             favSongs.forEach { song ->
-                SongCard(song, true, { onPlay(song) }, {}, {}, {})
+                SongCard(
+                    song = song,
+                    favorite = true,
+                    onPlay = { onPlay(song, favSongs) },
+                    onFavorite = { onFavorite(song) },
+                    onAddToPlaylist = { onAddToPlaylist(song) },
+                    onAddToAlbum = { onAddToAlbum(song) },
+                    onEdit = { onEdit(song) }
+                )
                 Spacer(Modifier.height(6.dp))
             }
         }
@@ -1333,12 +1719,15 @@ private fun LibraryScreen(
     query: String,
     listState: LazyListState,
     favorites: Set<String>,
-    recents: Set<String>,
+    recents: List<String>,
+    playlistName: String,
+    playlistSongs: Set<String>,
     customAlbums: List<String>,
     getCustomAlbumSongs: (String) -> Set<String>,
     onCreateAlbum: () -> Unit,
     onPlay: (Song, List<Song>) -> Unit,
     onFavorite: (Song) -> Unit,
+    onAddToPlaylist: (Song) -> Unit,
     onAddToAlbum: (Song) -> Unit,
     onEdit: (Song) -> Unit,
     modifier: Modifier = Modifier
@@ -1359,7 +1748,8 @@ private fun LibraryScreen(
         allSongs.groupBy { it.folder }.toList().sortedBy { it.first.lowercase() }
     }
 
-    val songsToDisplay = remember(allSongs, mode, filterKey, query, favorites, recents, customAlbums) {
+    val songsToDisplay = remember(allSongs, mode, filterKey, query, favorites, recents, playlistSongs, customAlbums) {
+        val songMap = allSongs.associateBy { it.id.toString() }
         val base = when {
             filterKey != null -> {
                 when (mode) {
@@ -1377,22 +1767,23 @@ private fun LibraryScreen(
                 }
             }
             mode == "Favorites" -> allSongs.filter { it.id.toString() in favorites }
-            mode == "Recent" -> allSongs.sortedByDescending { if (it.id.toString() in recents) recents.indexOf(it.id.toString()) else -1 }
+            mode == "Recent" -> recents.mapNotNull { songMap[it] }
+            mode == "Playlist" -> allSongs.filter { it.id.toString() in playlistSongs }
             else -> allSongs
         }
         if (query.isBlank()) base else base.filter {
             it.title.contains(query, true) || it.artist.contains(query, true) ||
-                    it.album.contains(query, true) || it.folder.contains(query, true)
+                it.album.contains(query, true) || it.folder.contains(query, true)
         }
     }
 
     Column(modifier) {
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf("Songs", "Artists", "Albums", "Folders", "Favorites", "Recent").forEach { item ->
+            listOf("Songs", "Artists", "Albums", "Folders", "Favorites", "Recent", "Playlist").forEach { item ->
                 FilterChip(
                     selected = mode == item,
                     onClick = { onMode(item) },
-                    label = { Text(item) },
+                    label = { Text(if (item == "Playlist") "Playlist: $playlistName" else item) },
                     colors = FilterChipDefaults.filterChipColors(
                         selectedContainerColor = NeonPurple.copy(alpha = 0.35f),
                         selectedLabelColor = ElectricCyan,
@@ -1418,14 +1809,14 @@ private fun LibraryScreen(
             }
         } else {
             Row(
-                modifier = Modifier.fillMaxWidth().padding(vertical = 7.dp),
+                modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 val countText = when (mode) {
                     "Artists" -> "${artistGroups.size} ARTISTS"
                     "Albums" -> "${albumGroups.size} ALBUMS"
                     "Folders" -> "${folderGroups.size} FOLDERS"
-                    else -> "${songsToDisplay.size} TRACKS   ${allSongs.size} IN REPOSITORY"
+                    else -> "${songsToDisplay.size} TRACKS • ${allSongs.size} TOTAL"
                 }
                 Text(
                     countText,
@@ -1476,7 +1867,7 @@ private fun LibraryScreen(
                         val isUserAlbum = album in customAlbums
                         GroupCard(
                             title = album,
-                            subtitle = if (isUserAlbum) "Custom Album   ${songList.size} Tracks" else "${songList.firstOrNull()?.artist ?: "Various"}   ${songList.size} Tracks",
+                            subtitle = if (isUserAlbum) "Custom Album • ${songList.size} Tracks" else "${songList.firstOrNull()?.artist ?: "Various"} • ${songList.size} Tracks",
                             icon = Icons.Default.Album,
                             representativeSong = songList.firstOrNull(),
                             isCustom = isUserAlbum,
@@ -1523,6 +1914,7 @@ private fun LibraryScreen(
                                     favorite = song.id.toString() in favorites,
                                     onPlay = { onPlay(song, songsToDisplay) },
                                     onFavorite = { onFavorite(song) },
+                                    onAddToPlaylist = { onAddToPlaylist(song) },
                                     onAddToAlbum = { onAddToAlbum(song) },
                                     onEdit = { onEdit(song) }
                                 )
@@ -1533,6 +1925,81 @@ private fun LibraryScreen(
                             listState = listState,
                             modifier = Modifier.padding(start = 6.dp)
                         )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlaylistScreen(
+    playlists: List<String>,
+    selected: String,
+    allSongs: List<Song>,
+    getPlaylistTrackIds: (String) -> Set<String>,
+    onOpen: (String) -> Unit,
+    onPlayAll: (String) -> Unit,
+    onDelete: (String) -> Unit,
+    onCreate: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(modifier.verticalScroll(rememberScrollState()).padding(vertical = 8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("CUSTOM PLAYLISTS", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Text("Organize collections & launch instant party queues", color = MutedLavender, fontSize = 11.sp)
+            }
+            Button(
+                onClick = onCreate,
+                colors = ButtonDefaults.buttonColors(containerColor = DeepViolet)
+            ) {
+                Icon(Icons.Default.Add, null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("New")
+            }
+        }
+        Spacer(Modifier.height(14.dp))
+
+        playlists.forEach { name ->
+            val trackIds = getPlaylistTrackIds(name)
+            val matchedSongs = allSongs.filter { it.id.toString() in trackIds }
+            BouncyButton(onClick = { onOpen(name) }, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                Surface(
+                    color = GlassPill,
+                    shape = RoundedCornerShape(20.dp),
+                    border = BorderStroke(1.2.dp, if (name == selected) ElectricCyan else GlassBorder),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                        if (matchedSongs.isNotEmpty()) {
+                            SongThumb(song = matchedSongs.first(), modifier = Modifier.size(48.dp))
+                        } else {
+                            Box(
+                                Modifier
+                                    .size(48.dp)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(Brush.linearGradient(listOf(NeonPurple.copy(alpha = 0.5f), ElectricCyan.copy(alpha = 0.5f)))),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(Icons.Default.QueueMusic, null, tint = Color.White)
+                            }
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                            Text("${matchedSongs.size} tracks", color = MutedLavender, fontSize = 12.sp)
+                        }
+                        if (matchedSongs.isNotEmpty()) {
+                            IconButton(onClick = { onPlayAll(name) }) {
+                                Icon(Icons.Default.PlayCircleFilled, contentDescription = "Play Playlist", tint = ElectricCyan, modifier = Modifier.size(30.dp))
+                            }
+                        }
+                        if (name != "Favorites") {
+                            IconButton(onClick = { onDelete(name) }) {
+                                Icon(Icons.Default.DeleteOutline, contentDescription = "Delete", tint = Color(0xFFFF5286))
+                            }
+                        }
                     }
                 }
             }
@@ -1613,7 +2080,7 @@ private fun SamsungAlphabetScroller(
     Box(
         modifier = modifier
             .fillMaxHeight()
-            .width(28.dp)
+            .width(24.dp)
             .onGloballyPositioned { railHeightPx = it.size.height.toFloat() }
             .pointerInput(alphabet, songs) {
                 detectTapGestures(
@@ -1655,7 +2122,7 @@ private fun SamsungAlphabetScroller(
                 Text(
                     text = letter.toString(),
                     color = if (isSelected) ElectricCyan else MutedLavender.copy(alpha = 0.5f),
-                    fontSize = 10.sp,
+                    fontSize = 9.sp,
                     fontWeight = if (isSelected) FontWeight.Black else FontWeight.Normal
                 )
             }
@@ -1665,16 +2132,16 @@ private fun SamsungAlphabetScroller(
                 modifier = Modifier
                     .align(Alignment.CenterStart)
                     .offset(x = (-46).dp)
-                    .size(48.dp)
+                    .size(44.dp)
                     .clip(CircleShape)
                     .background(Brush.radialGradient(listOf(ElectricCyan, NeonPurple)))
-                    .border(2.dp, Color.White, CircleShape),
+                    .border(1.5.dp, Color.White, CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
                     text = letter.toString(),
                     color = OLEDBlack,
-                    fontSize = 22.sp,
+                    fontSize = 20.sp,
                     fontWeight = FontWeight.Black
                 )
             }
@@ -1688,9 +2155,12 @@ private fun SongCard(
     favorite: Boolean,
     onPlay: () -> Unit,
     onFavorite: () -> Unit,
+    onAddToPlaylist: () -> Unit,
     onAddToAlbum: () -> Unit,
     onEdit: () -> Unit
 ) {
+    var menuExpanded by remember { mutableStateOf(false) }
+
     BouncyButton(onClick = onPlay, modifier = Modifier.fillMaxWidth()) {
         Surface(
             color = GlassPill,
@@ -1699,25 +2169,58 @@ private fun SongCard(
             modifier = Modifier.fillMaxWidth()
         ) {
             Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                SongThumb(song, Modifier.size(50.dp))
+                SongThumb(song, Modifier.size(48.dp))
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(song.title, color = Color.White, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(song.title, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text("${song.artist} • ${song.album}", color = MutedLavender, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(song.folder, color = ElectricCyan.copy(alpha = 0.8f), fontSize = 10.sp)
+                    Text("${song.folder} • ${timeText(song.durationMs)}", color = ElectricCyan.copy(alpha = 0.8f), fontSize = 10.sp)
                 }
-                IconButton(onClick = onFavorite) {
+                IconButton(onClick = onFavorite, modifier = Modifier.size(34.dp)) {
                     Icon(
                         if (favorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                         null,
-                        tint = if (favorite) Color(0xFFFF5286) else MutedLavender
+                        tint = if (favorite) Color(0xFFFF5286) else MutedLavender,
+                        modifier = Modifier.size(19.dp)
                     )
                 }
-                IconButton(onClick = onAddToAlbum) {
-                    Icon(Icons.Default.Album, "Add to Album", tint = NeonPurple)
+                IconButton(onClick = onEdit, modifier = Modifier.size(34.dp)) {
+                    Icon(Icons.Default.AutoFixHigh, "Auto-Fix Metadata", tint = ElectricCyan, modifier = Modifier.size(19.dp))
                 }
-                IconButton(onClick = onEdit) {
-                    Icon(Icons.Default.AutoFixHigh, "Auto-Fix Metadata", tint = ElectricCyan, modifier = Modifier.size(20.dp))
+                Box {
+                    IconButton(onClick = { menuExpanded = true }, modifier = Modifier.size(32.dp)) {
+                        Icon(Icons.Default.MoreVert, contentDescription = "More", tint = MutedLavender, modifier = Modifier.size(19.dp))
+                    }
+                    DropdownMenu(
+                        expanded = menuExpanded,
+                        onDismissRequest = { menuExpanded = false },
+                        modifier = Modifier.background(Color(0xFF1E1436))
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Add to Playlist", color = Color.White) },
+                            leadingIcon = { Icon(Icons.Default.PlaylistAdd, null, tint = ElectricCyan) },
+                            onClick = {
+                                menuExpanded = false
+                                onAddToPlaylist()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Add to Custom Album", color = Color.White) },
+                            leadingIcon = { Icon(Icons.Default.Album, null, tint = NeonPurple) },
+                            onClick = {
+                                menuExpanded = false
+                                onAddToAlbum()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Fingerprint Auto-Fixer", color = Color.White) },
+                            leadingIcon = { Icon(Icons.Default.AutoFixHigh, null, tint = ElectricCyan) },
+                            onClick = {
+                                menuExpanded = false
+                                onEdit()
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -1727,21 +2230,35 @@ private fun SongCard(
 @Composable
 private fun SongThumb(song: Song, modifier: Modifier = Modifier) {
     val context = LocalContext.current
-    var embeddedBitmap by remember(song.id) { mutableStateOf<ImageBitmap?>(null) }
+    var embeddedBitmap by remember(song.id, song.albumArtUri) { mutableStateOf<ImageBitmap?>(null) }
 
-    LaunchedEffect(song.id) {
-        withContext(Dispatchers.IO) {
-            val bytes = MusicRepository.extractEmbeddedPicture(context, song.uri)
-            if (bytes != null) {
-                val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                if (bmp != null) {
-                    embeddedBitmap = bmp.asImageBitmap()
+    val hasDownloadedOverride = song.albumArtUri?.startsWith("file://") == true
+
+    LaunchedEffect(song.id, song.albumArtUri) {
+        if (!hasDownloadedOverride) {
+            withContext(Dispatchers.IO) {
+                val bytes = MusicRepository.extractEmbeddedPicture(context, song.uri)
+                if (bytes != null) {
+                    val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    if (bmp != null) {
+                        embeddedBitmap = bmp.asImageBitmap()
+                    }
                 }
             }
         }
     }
 
-    if (embeddedBitmap != null) {
+    if (hasDownloadedOverride && !song.albumArtUri.isNullOrBlank()) {
+        AsyncImage(
+            model = ImageRequest.Builder(context)
+                .data(song.albumArtUri)
+                .crossfade(true)
+                .build(),
+            contentDescription = "Artwork",
+            contentScale = ContentScale.Crop,
+            modifier = modifier.clip(RoundedCornerShape(14.dp))
+        )
+    } else if (embeddedBitmap != null) {
         Image(
             bitmap = embeddedBitmap!!,
             contentDescription = "Artwork",
@@ -1841,7 +2358,7 @@ private fun TagEditorAndFingerprintDialog(
                 }
 
                 if (matchConfidence > 0f) {
-                    Text("✓ Confidence Match: ${(matchConfidence * 100).toInt()}% • HD Art Saved", color = ElectricCyan, fontSize = 12.sp)
+                    Text("✓ Confidence Match: ${(matchConfidence * 100).toInt()}% • Persisted", color = ElectricCyan, fontSize = 12.sp)
                 }
             }
         },
@@ -1902,7 +2419,7 @@ private fun SettingsScreen(
                     Spacer(Modifier.width(10.dp))
                     Column(Modifier.weight(1f)) {
                         Text("Dual Audio Share (Party Mode)", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                        Text("Connect 2 pairs of Bluetooth headphones simultaneously", color = MutedLavender, fontSize = 11.sp)
+                        Text("Stream synchronized audio to 2 Bluetooth headphones", color = MutedLavender, fontSize = 11.sp)
                     }
                 }
                 Spacer(Modifier.height(10.dp))
@@ -1913,7 +2430,7 @@ private fun SettingsScreen(
                 ) {
                     Icon(Icons.Default.BluetoothAudio, null)
                     Spacer(Modifier.width(6.dp))
-                    Text("Launch Dual Audio Settings")
+                    Text("Launch Dual Audio Router")
                 }
             }
         }
@@ -1952,7 +2469,7 @@ private fun SettingsScreen(
 
         Spacer(Modifier.height(16.dp))
         Text("SMART NOTIFICATION AUTO-FADE", color = NeonPurple, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-        Text("Automatically ducks volume to 18% during incoming notifications/alerts instead of abrupt cuts.", color = MutedLavender, fontSize = 12.sp)
+        Text("Smoothly ducks playback volume down to 18% during incoming notifications and glides back to 100%.", color = MutedLavender, fontSize = 12.sp)
 
         Spacer(Modifier.height(16.dp))
         Text("SLEEP TIMER", color = NeonPurple, fontWeight = FontWeight.Bold, fontSize = 13.sp)
@@ -1997,7 +2514,7 @@ private fun SettingsScreen(
         Spacer(Modifier.height(16.dp))
         Text("MEDIA STORE INDEX", color = ElectricCyan, fontWeight = FontWeight.Bold, fontSize = 13.sp)
         Spacer(Modifier.height(6.dp))
-        Text("$songCount tracks loaded from device storage.", color = MutedLavender, fontSize = 12.sp)
+        Text("$songCount tracks indexed from local storage.", color = MutedLavender, fontSize = 12.sp)
         Spacer(Modifier.height(6.dp))
         Button(onClick = onRescan, colors = ButtonDefaults.buttonColors(containerColor = GlassPill)) {
             Icon(Icons.Default.Refresh, null, tint = ElectricCyan)
@@ -2006,7 +2523,7 @@ private fun SettingsScreen(
         }
 
         Spacer(Modifier.height(20.dp))
-        Text("SONIQ v0.4.0 • Master Edition with Stems & Parallax", color = MutedLavender.copy(alpha = 0.5f), fontSize = 11.sp)
+        Text("SONIQ v0.5.0 • Production Release", color = MutedLavender.copy(alpha = 0.5f), fontSize = 11.sp)
     }
 }
 
