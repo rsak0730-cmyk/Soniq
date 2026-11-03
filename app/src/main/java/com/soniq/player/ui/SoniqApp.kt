@@ -86,7 +86,6 @@ private val GlassBorder = Color(0x5553F6FF)
 enum class MainTab(val label: String, val icon: ImageVector) {
     HOME("Home", Icons.Default.Home),
     LIBRARY("Library", Icons.Default.LibraryMusic),
-    RADIO("Radio", Icons.Default.Radio),
     EQUALIZER("Equalizer", Icons.Default.Equalizer),
     PLAYLISTS("Playlists", Icons.Default.QueueMusic),
     SETTINGS("Settings", Icons.Default.Settings)
@@ -155,7 +154,6 @@ fun SoniqApp() {
     var batchTrackName by remember { mutableStateOf("") }
     var batchSummary by remember { mutableStateOf<String?>(null) }
 
-    var activeRadioUrl by remember { mutableStateOf<String?>(null) }
     var bioArtistName by remember { mutableStateOf<String?>(null) }
 
     var playlists by remember { mutableStateOf<List<String>>(prefs.getStringSet("playlists", setOf("Favorites", "Workout", "Late Night"))?.toList()?.sorted() ?: listOf("Favorites")) }
@@ -197,38 +195,6 @@ fun SoniqApp() {
 
     fun saveFavorites() { prefs.edit().putStringSet("favorites", favorites).apply() }
     fun saveRecents(updated: List<String>) { prefs.edit().putString("recents_ordered", updated.joinToString("|")).apply() }
-
-    fun playRadioStation(station: RadioStation) {
-        val c = controller ?: return
-        activeRadioUrl = station.streamUrl
-        val mediaItem = MediaItem.Builder()
-            .setMediaId(station.stationuuid)
-            .setUri(station.streamUrl)
-            .setMediaMetadata(
-                MediaMetadata.Builder()
-                    .setTitle(station.name)
-                    .setArtist(station.tags.ifBlank { "Live Radio" })
-                    .setAlbumTitle(station.country)
-                    .setArtworkUri(station.favicon?.let(Uri::parse))
-                    .build()
-            ).build()
-        c.setMediaItem(mediaItem)
-        c.prepare()
-        c.play()
-        currentSong = Song(
-            id = -System.currentTimeMillis(),
-            title = station.name,
-            artist = "Live Radio (${station.country})",
-            album = station.tags,
-            durationMs = 0L,
-            uri = station.streamUrl,
-            albumArtUri = station.favicon,
-            folder = "Radio",
-            dateAdded = System.currentTimeMillis()
-        )
-        isPlaying = true
-        showPlayer = true
-    }
 
     fun triggerBatchFix() {
         if (isBatchFixing) return
@@ -288,7 +254,6 @@ fun SoniqApp() {
 
     fun playSong(song: Song, source: List<Song> = songs, openFullPlayer: Boolean = true) {
         val c = controller ?: return
-        activeRadioUrl = null
         val queue = source.ifEmpty { songs }.ifEmpty { listOf(song) }
         val index = queue.indexOfFirst { it.id == song.id }.coerceAtLeast(0)
         c.setMediaItems(queue.map { s ->
@@ -447,7 +412,7 @@ fun SoniqApp() {
                             fontWeight = FontWeight.Black,
                             letterSpacing = 1.4.sp
                         )
-                        Text("Liquid Gyro Acoustics • Radio Sync", color = MutedLavender, fontSize = 11.sp)
+                        Text("Liquid Gyro Acoustics • Party Sync", color = MutedLavender, fontSize = 11.sp)
                     }
                     Surface(
                         color = GlassPill,
@@ -589,11 +554,6 @@ fun SoniqApp() {
                             onAddToAlbum = { addToAlbumSong = it },
                             onEdit = { editTagSong = it },
                             onShowBio = { bioArtistName = it },
-                            modifier = Modifier.fillMaxSize()
-                        )
-                        MainTab.RADIO -> RadioScreen(
-                            currentStreamUrl = activeRadioUrl,
-                            onPlayStation = { playRadioStation(it) },
                             modifier = Modifier.fillMaxSize()
                         )
                         MainTab.EQUALIZER -> EqualizerScreen(Modifier.fillMaxSize())
@@ -739,7 +699,6 @@ fun SoniqApp() {
                 }
             }
 
-            // Artist Bio Modal Bottom Sheet
             bioArtistName?.let { artist ->
                 ArtistBioBottomSheet(
                     artistName = artist,
@@ -1727,7 +1686,7 @@ private fun FloatingBottomNavBar(
         border = BorderStroke(1.2.dp, GlassBorder)
     ) {
         Row(
-            modifier = Modifier.fillMaxSize().padding(horizontal = 4.dp),
+            modifier = Modifier.fillMaxSize().padding(horizontal = 6.dp),
             horizontalArrangement = Arrangement.SpaceAround,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -1740,7 +1699,7 @@ private fun FloatingBottomNavBar(
                 )
                 BouncyButton(
                     onClick = { onSelect(tab) },
-                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
                 ) {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -1750,12 +1709,12 @@ private fun FloatingBottomNavBar(
                             tab.icon,
                             contentDescription = tab.label,
                             tint = if (selected) activeColor else MutedLavender.copy(alpha = 0.5f),
-                            modifier = Modifier.size(20.dp)
+                            modifier = Modifier.size(22.dp)
                         )
                         Text(
                             tab.label,
                             color = if (selected) activeColor else MutedLavender.copy(alpha = 0.5f),
-                            fontSize = 8.5.sp,
+                            fontSize = 9.sp,
                             fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
                         )
                     }
