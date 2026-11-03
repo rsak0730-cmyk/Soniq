@@ -21,8 +21,16 @@ class MainActivity : ComponentActivity() {
             if (Build.VERSION.SDK_INT >= 33) {
                 add(Manifest.permission.READ_MEDIA_AUDIO)
                 add(Manifest.permission.POST_NOTIFICATIONS)
-            } else add(Manifest.permission.READ_EXTERNAL_STORAGE)
+            } else {
+                add(Manifest.permission.READ_EXTERNAL_STORAGE)
+            }
+            if (Build.VERSION.SDK_INT >= 31) {
+                add(Manifest.permission.BLUETOOTH_CONNECT)
+            }
+            // Required so Android's native Visualizer (RealtimeFftMonitor) doesn't fail/crash
+            add(Manifest.permission.RECORD_AUDIO)
         }.toTypedArray()
+
         permissionLauncher.launch(permissions)
 
         setContent {
@@ -33,7 +41,9 @@ class MainActivity : ComponentActivity() {
                     background = Color(0xFF090711),
                     surface = Color(0xFF171222)
                 )
-            ) { SoniqApp() }
+            ) {
+                SoniqApp()
+            }
         }
     }
 }

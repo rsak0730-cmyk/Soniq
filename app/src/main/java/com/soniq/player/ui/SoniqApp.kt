@@ -187,7 +187,6 @@ fun SoniqApp() {
     var playerOffsetY by remember { mutableFloatStateOf(0f) }
     val gyroEngine = remember { GyroscopeParallaxEngine(context) }
 
-    // Independent Slowed and Reverb sliders state
     var currentSpeedMode by remember { mutableStateOf("Normal") }
     var slowedSpeedFactor by remember { mutableFloatStateOf(0.85f) }
     var reverbStrengthFactor by remember { mutableFloatStateOf(0.70f) }
@@ -212,7 +211,7 @@ fun SoniqApp() {
 
     fun playSong(song: Song, source: List<Song> = songs, openFullPlayer: Boolean = true) {
         val c = controller ?: return
-        val queue = source.ifEmpty { songs }.ifEmpty { listOf(song) }
+        val queue = source.ifEmpty { listOf(song) }
         val index = queue.indexOfFirst { it.id == song.id }.coerceAtLeast(0)
         c.setMediaItems(queue.map { s ->
             MediaItem.Builder()
@@ -243,26 +242,22 @@ fun SoniqApp() {
     fun applyPlaybackSettings(mode: String, speed: Float, reverb: Float) {
         val c = controller ?: return
         currentSpeedMode = mode
-        when (mode) {
-            "Nightcore" -> {
-                c.playbackParameters = PlaybackParameters(1.25f, 1.25f)
-                runCatching {
+        runCatching {
+            when (mode) {
+                "Nightcore" -> {
+                    c.playbackParameters = PlaybackParameters(1.25f, 1.25f)
                     if (AudioEffectsBridge.isAvailable() && AudioEffectsBridge.virtualizerSupported()) {
                         AudioEffectsBridge.setVirtualizerStrength(0)
                     }
                 }
-            }
-            "Slowed" -> {
-                c.playbackParameters = PlaybackParameters(speed, speed)
-                runCatching {
+                "Slowed" -> {
+                    c.playbackParameters = PlaybackParameters(speed.coerceIn(0.5f, 1.5f), speed.coerceIn(0.5f, 1.5f))
                     if (AudioEffectsBridge.isAvailable() && AudioEffectsBridge.virtualizerSupported()) {
-                        AudioEffectsBridge.setVirtualizerStrength((reverb * 1000f).roundToInt())
+                        AudioEffectsBridge.setVirtualizerStrength((reverb * 1000f).roundToInt().coerceIn(0, 1000))
                     }
                 }
-            }
-            else -> {
-                c.playbackParameters = PlaybackParameters(1.0f, 1.0f)
-                runCatching {
+                else -> {
+                    c.playbackParameters = PlaybackParameters(1.0f, 1.0f)
                     if (AudioEffectsBridge.isAvailable() && AudioEffectsBridge.virtualizerSupported()) {
                         AudioEffectsBridge.setVirtualizerStrength(0)
                     }
@@ -278,10 +273,12 @@ fun SoniqApp() {
             }
             context.startActivity(intent)
         } catch (_: Exception) {
-            val fallback = Intent(Settings.ACTION_BLUETOOTH_SETTINGS).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            runCatching {
+                val fallback = Intent(Settings.ACTION_BLUETOOTH_SETTINGS).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                context.startActivity(fallback)
             }
-            context.startActivity(fallback)
         }
     }
 
@@ -307,31 +304,32 @@ fun SoniqApp() {
                     batchTrackName = name
                 },
                 onSongFixed = { song, fix ->
-                    val artUri = fix.albumArtUrl?.let { url ->
-                        scope.launch(Dispatchers.IO) {
-                            ArtworkScraper.saveDownloadedCoverToFile(context, song, url)
+                    scope.launch {
+                        val savedArt = if (!fix.albumArtUrl.isNullOrBlank()) {
+                            ArtworkScraper.saveDownloadedCoverToFile(context, song, fix.albumArtUrl) ?: fix.albumArtUrl
+                        } else {
+                            song.albumArtUri
                         }
-                        url
-                    } ?: song.albumArtUri
 
-                    saveMetadataOverride(prefs, song.id, fix.title, fix.artist, fix.album, artUri)
+                        saveMetadataOverride(prefs, song.id, fix.title, fix.artist, fix.album, savedArt)
 
-                    songs = songs.map {
-                        if (it.id == song.id) it.copy(
-                            title = fix.title,
-                            artist = fix.artist,
-                            album = fix.album,
-                            albumArtUri = artUri
-                        ) else it
-                    }
+                        songs = songs.map {
+                            if (it.id == song.id) it.copy(
+                                title = fix.title,
+                                artist = fix.artist,
+                                album = fix.album,
+                                albumArtUri = savedArt
+                            ) else it
+                        }
 
-                    if (currentSong?.id == song.id) {
-                        currentSong = currentSong?.copy(
-                            title = fix.title,
-                            artist = fix.artist,
-                            album = fix.album,
-                            albumArtUri = artUri
-                        )
+                        if (currentSong?.id == song.id) {
+                            currentSong = currentSong?.copy(
+                                title = fix.title,
+                                artist = fix.artist,
+                                album = fix.album,
+                                albumArtUri = savedArt
+                            )
+                        }
                     }
                 }
             )
@@ -410,7 +408,8 @@ fun SoniqApp() {
         while (true) {
             controller?.let { c ->
                 position = c.currentPosition.coerceAtLeast(0L)
-                duration = c.duration.coerceAtLeast(0L)
+                val playerDur = c.duration
+                if (playerDur > 0) duration = playerDur
                 isPlaying = c.isPlaying
                 if (c.currentMediaItem != null && currentSong == null && songs.isNotEmpty()) {
                     val idStr = c.currentMediaItem?.mediaId
@@ -546,12 +545,15 @@ fun SoniqApp() {
                                             isSearchingOnline = true
                                             onlineResults = OnlineStreamEngine.searchOnlineSongs(query)
                                             isSearchingOnline = false
+                                            if (onlineResults.isEmpty()) {
+                                                Toast.makeText(context, "No online streams found for '$query'", Toast.LENGTH_SHORT).show()
+                                            }
                                         }
                                     }
                                 ) {
                                     Icon(Icons.Default.CloudDownload, null, tint = ElectricCyan, modifier = Modifier.size(16.dp))
                                     Spacer(Modifier.width(6.dp))
-                                    Text(if (isSearchingOnline) "Searching Public Streams..." else "Search Online Streams", color = ElectricCyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    Text(if (isSearchingOnline) "Searching Online Streams..." else "Search Online Streams", color = ElectricCyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                 }
                             }
                         }
@@ -582,7 +584,7 @@ fun SoniqApp() {
 
                 if (onlineResults.isNotEmpty() && currentTab == MainTab.LIBRARY) {
                     Column(Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
-                        Text("ONLINE STREAMS (KEYLESS)", color = ElectricCyan, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                        Text("ONLINE STREAMS (TAP TO PLAY)", color = ElectricCyan, fontWeight = FontWeight.Bold, fontSize = 11.sp)
                         Spacer(Modifier.height(4.dp))
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             items(onlineResults, key = { it.videoId }) { ot ->
@@ -721,19 +723,23 @@ fun SoniqApp() {
                             timerMinutes = timerMinutes,
                             timerLeft = timerLeft,
                             customTimer = customTimer,
+                            isScanningDuplicates = isScanningDuplicates,
                             onCustomTimerChange = { customTimer = it },
                             onSetTimer = { timerMinutes = it },
                             onCancelTimer = { timerMinutes = 0 },
                             onRescan = {
                                 val loaded = MusicRepository(context).loadSongs()
                                 songs = applySavedMetadataOverrides(loaded, prefs)
+                                Toast.makeText(context, "Rescanned ${songs.size} tracks", Toast.LENGTH_SHORT).show()
                             },
                             onAutoFixAll = { triggerBatchFix() },
                             onScanDuplicates = {
-                                scope.launch {
-                                    isScanningDuplicates = true
-                                    duplicateGroups = DuplicateCleanerEngine.findDuplicates(context, songs)
-                                    isScanningDuplicates = false
+                                if (!isScanningDuplicates) {
+                                    scope.launch {
+                                        isScanningDuplicates = true
+                                        duplicateGroups = DuplicateCleanerEngine.findDuplicates(context, songs)
+                                        isScanningDuplicates = false
+                                    }
                                 }
                             },
                             onLaunchDualAudio = { launchPartyMode() },
@@ -850,11 +856,10 @@ fun SoniqApp() {
                                 if (similar.isNotEmpty()) {
                                     playSong(similar.first(), similar)
                                 } else {
-                                    Toast.makeText(context, "No similar tracks found.", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, "No similar tracks found online.", Toast.LENGTH_SHORT).show()
                                 }
                             }
                         },
-                        onLaunchParty = { launchPartyMode() },
                         onShowBio = { bioArtistName = currentSong!!.artist },
                         onOpenEqualizer = {
                             showPlayer = false
@@ -879,7 +884,7 @@ fun SoniqApp() {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.CleaningServices, null, tint = ElectricCyan)
                             Spacer(Modifier.width(8.dp))
-                            Text("Duplicate & Bitrate Cleaner", color = Color.White)
+                            Text("Duplicate & Bitrate Cleaner", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
                         }
                     },
                     text = {
@@ -898,12 +903,12 @@ fun SoniqApp() {
                                             ) {
                                                 Text(
                                                     "${item.song.folder} • ${item.bitrateKbps} kbps",
-                                                    color = if (item.bitrateKbps >= 320) Color(0xFF50FA7B) else MutedLavender,
+                                                    color = if (item.bitrateKbps >= 256) Color(0xFF50FA7B) else MutedLavender,
                                                     fontSize = 11.sp
                                                 )
-                                                if (item.bitrateKbps < 320) {
+                                                if (item.bitrateKbps < 256) {
                                                     Text(
-                                                        "Low Quality",
+                                                        "Lower Bitrate",
                                                         color = Color(0xFFFF5286),
                                                         fontSize = 10.sp,
                                                         fontWeight = FontWeight.Bold
@@ -1517,7 +1522,6 @@ private fun FullPlayer(
     onToggleFavorite: () -> Unit,
     onShareStoryCard: () -> Unit,
     onPlaySimilarRadio: () -> Unit,
-    onLaunchParty: () -> Unit,
     onShowBio: () -> Unit,
     onOpenEqualizer: () -> Unit
 ) {
@@ -1528,7 +1532,7 @@ private fun FullPlayer(
     var isLoadingLyrics by remember { mutableStateOf(false) }
     val lyricsListState = rememberLazyListState()
 
-    LaunchedEffect(song.id) {
+    LaunchedEffect(song.id, song.title) {
         isLoadingLyrics = true
         lyrics = LyricsEngine.loadLyricsForSong(context, song)
         isLoadingLyrics = false
@@ -1589,64 +1593,66 @@ private fun FullPlayer(
             )
             Spacer(Modifier.height(6.dp))
 
-            // Fixed Top Header Row
+            // Single-line balanced header
             Row(
                 Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    BouncyIconButton(onClick = onClose) {
-                        Icon(Icons.Default.KeyboardArrowDown, null, tint = Color.White, modifier = Modifier.size(28.dp))
+                    BouncyIconButton(onClick = onClose, size = 38.dp) {
+                        Icon(Icons.Default.KeyboardArrowDown, null, tint = Color.White, modifier = Modifier.size(26.dp))
                     }
-                    Spacer(Modifier.width(4.dp))
                     Text(
                         "NOW PLAYING",
                         color = MutedLavender,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp,
+                        fontSize = 12.sp,
                         letterSpacing = 1.sp,
-                        maxLines = 1
+                        maxLines = 1,
+                        softWrap = false
                     )
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    BouncyIconButton(onClick = onShareStoryCard) {
-                        Icon(Icons.Default.Share, "Share", tint = secondaryAccent, modifier = Modifier.size(20.dp))
+                    BouncyIconButton(onClick = onShareStoryCard, size = 36.dp) {
+                        Icon(Icons.Default.Share, "Share", tint = secondaryAccent, modifier = Modifier.size(19.dp))
                     }
-                    BouncyIconButton(onClick = onPlaySimilarRadio) {
-                        Icon(Icons.Default.AutoAwesome, "Radio", tint = primaryAccent, modifier = Modifier.size(20.dp))
+                    BouncyIconButton(onClick = onPlaySimilarRadio, size = 36.dp) {
+                        Icon(Icons.Default.AutoAwesome, "Radio", tint = primaryAccent, modifier = Modifier.size(19.dp))
                     }
-                    BouncyIconButton(onClick = onShowBio) {
-                        Icon(Icons.Default.Info, "Bio", tint = secondaryAccent, modifier = Modifier.size(20.dp))
+                    BouncyIconButton(onClick = onShowBio, size = 36.dp) {
+                        Icon(Icons.Default.Info, "Bio", tint = secondaryAccent, modifier = Modifier.size(19.dp))
                     }
-                    BouncyIconButton(onClick = { showLyrics = !showLyrics }) {
-                        Icon(Icons.Default.Lyrics, "Lyrics", tint = if (showLyrics) secondaryAccent else MutedLavender, modifier = Modifier.size(20.dp))
+                    BouncyIconButton(onClick = { showLyrics = !showLyrics }, size = 36.dp) {
+                        Icon(Icons.Default.Lyrics, "Lyrics", tint = if (showLyrics) secondaryAccent else MutedLavender, modifier = Modifier.size(19.dp))
                     }
-                    BouncyIconButton(onClick = onOpenEqualizer) {
-                        Icon(Icons.Default.Equalizer, "EQ", tint = secondaryAccent, modifier = Modifier.size(20.dp))
+                    BouncyIconButton(onClick = onOpenEqualizer, size = 36.dp) {
+                        Icon(Icons.Default.Equalizer, "EQ", tint = secondaryAccent, modifier = Modifier.size(19.dp))
                     }
                 }
             }
 
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(6.dp))
 
-            // Mode Selector Row
+            // Single-line Speed & Reverb Mode Chips
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 listOf("Normal", "Nightcore", "Slowed").forEach { mode ->
                     val isSel = speedMode == mode
                     Surface(
-                        shape = RoundedCornerShape(12.dp),
+                        shape = RoundedCornerShape(14.dp),
                         color = if (isSel) secondaryAccent.copy(alpha = 0.22f) else Color(0x2218102C),
                         border = BorderStroke(1.dp, if (isSel) secondaryAccent else Color(0x33C7BCE0)),
                         modifier = Modifier
                             .height(32.dp)
                             .clickable { onSpeedModeChange(mode) }
                     ) {
-                        Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 10.dp)) {
+                        Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 12.dp)) {
                             Text(
                                 text = when (mode) {
                                     "Nightcore" -> "⚡ 1.25x Nightcore"
@@ -1655,6 +1661,8 @@ private fun FullPlayer(
                                 },
                                 color = if (isSel) secondaryAccent else MutedLavender,
                                 fontSize = 11.sp,
+                                maxLines = 1,
+                                softWrap = false,
                                 fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal
                             )
                         }
@@ -1662,49 +1670,91 @@ private fun FullPlayer(
                 }
             }
 
-            // Expanded Slowed + Reverb Control Sliders
+            // Dual Adjustable Sliders for Slowed + Reverb
             AnimatedVisibility(visible = speedMode == "Slowed") {
                 Surface(
                     shape = RoundedCornerShape(16.dp),
-                    color = Color(0x5518102C),
+                    color = Color(0x6618102C),
                     border = BorderStroke(1.dp, GlassBorder),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 8.dp, bottom = 4.dp)
+                        .padding(top = 8.dp)
                 ) {
-                    Column(Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
+                    Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                        // Speed / Tempo Control Row with - / + step buttons
                         Row(
                             Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Text("Tempo (Slowed Factor)", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                            Text("%.2fx".format(slowedSpeedFactor), color = secondaryAccent, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Text("Slowed Speed", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(
+                                    onClick = { onSlowedSpeedChange((slowedSpeedFactor - 0.05f).coerceIn(0.60f, 0.95f)) },
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(Icons.Default.Remove, null, tint = secondaryAccent, modifier = Modifier.size(16.dp))
+                                }
+                                Text(
+                                    "%.2fx".format(slowedSpeedFactor),
+                                    color = secondaryAccent,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 6.dp)
+                                )
+                                IconButton(
+                                    onClick = { onSlowedSpeedChange((slowedSpeedFactor + 0.05f).coerceIn(0.60f, 0.95f)) },
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(Icons.Default.Add, null, tint = secondaryAccent, modifier = Modifier.size(16.dp))
+                                }
+                            }
                         }
                         Slider(
                             value = slowedSpeedFactor,
                             onValueChange = onSlowedSpeedChange,
                             valueRange = 0.60f..0.95f,
                             colors = SliderDefaults.colors(thumbColor = secondaryAccent, activeTrackColor = secondaryAccent),
-                            modifier = Modifier.height(28.dp)
+                            modifier = Modifier.height(24.dp)
                         )
 
                         Spacer(Modifier.height(4.dp))
 
+                        // Reverb Level Control Row with - / + step buttons
                         Row(
                             Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Text("3D Reverb / Spatial", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                            Text("${(reverbStrengthFactor * 100).roundToInt()}%", color = primaryAccent, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Text("Reverb Level", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(
+                                    onClick = { onReverbStrengthChange((reverbStrengthFactor - 0.10f).coerceIn(0f, 1f)) },
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(Icons.Default.Remove, null, tint = primaryAccent, modifier = Modifier.size(16.dp))
+                                }
+                                Text(
+                                    "${(reverbStrengthFactor * 100).roundToInt()}%",
+                                    color = primaryAccent,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 6.dp)
+                                )
+                                IconButton(
+                                    onClick = { onReverbStrengthChange((reverbStrengthFactor + 0.10f).coerceIn(0f, 1f)) },
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(Icons.Default.Add, null, tint = primaryAccent, modifier = Modifier.size(16.dp))
+                                }
+                            }
                         }
                         Slider(
                             value = reverbStrengthFactor,
                             onValueChange = onReverbStrengthChange,
                             valueRange = 0.0f..1.0f,
                             colors = SliderDefaults.colors(thumbColor = primaryAccent, activeTrackColor = primaryAccent),
-                            modifier = Modifier.height(28.dp)
+                            modifier = Modifier.height(24.dp)
                         )
                     }
                 }
@@ -1724,11 +1774,20 @@ private fun FullPlayer(
                 ) {
                     if (isLoadingLyrics) {
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator(color = secondaryAccent)
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                CircularProgressIndicator(color = secondaryAccent)
+                                Spacer(Modifier.height(8.dp))
+                                Text("Searching online lyrics database...", color = MutedLavender, fontSize = 12.sp)
+                            }
                         }
                     } else if (lyrics.isEmpty()) {
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text("No synchronized lyrics found online for this track.", color = MutedLavender, fontSize = 14.sp)
+                            Text(
+                                "No lyrics found for '${song.title}'.\nTry running Auto-Fix on this song first so its title is clean.",
+                                color = MutedLavender,
+                                fontSize = 13.sp,
+                                textAlign = TextAlign.Center
+                            )
                         }
                     } else {
                         LazyColumn(state = lyricsListState, modifier = Modifier.fillMaxSize()) {
@@ -1737,7 +1796,7 @@ private fun FullPlayer(
                                 Text(
                                     text = line.text,
                                     color = if (isCurrent) secondaryAccent else MutedLavender.copy(alpha = 0.45f),
-                                    fontSize = if (isCurrent) 21.sp else 15.sp,
+                                    fontSize = if (isCurrent) 20.sp else 15.sp,
                                     fontWeight = if (isCurrent) FontWeight.Black else FontWeight.Normal,
                                     textAlign = TextAlign.Center,
                                     modifier = Modifier
@@ -1763,7 +1822,7 @@ private fun FullPlayer(
 
                     Canvas(
                         Modifier
-                            .size(270.dp)
+                            .size(265.dp)
                             .aspectRatio(1f)
                             .pointerInput(duration) {
                                 detectTapGestures { tapOffset ->
@@ -1872,28 +1931,28 @@ private fun FullPlayer(
                         secondaryColor = secondaryAccent,
                         gyroPitch = gyroPitch,
                         gyroRoll = gyroRoll,
-                        modifier = Modifier.size(200.dp)
+                        modifier = Modifier.size(195.dp)
                     )
 
                     if (isPlaying) {
                         MiniVisualizer(
                             accent1 = secondaryAccent,
                             accent2 = primaryAccent,
-                            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 6.dp)
+                            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 4.dp)
                         )
                     }
                 }
             }
 
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(6.dp))
 
-            // Song Info & Favorite
+            // Song Title & Favorite
             Row(
                 Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(Modifier.weight(1f)) {
-                    Text(song.title, color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Black, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(song.title, color = Color.White, fontSize = 19.sp, fontWeight = FontWeight.Black, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text("${song.artist} • ${song.album}", color = MutedLavender, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 IconButton(onClick = onToggleFavorite) {
@@ -1905,7 +1964,7 @@ private fun FullPlayer(
                 }
             }
 
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(4.dp))
 
             WaveformSeekScrubber(
                 position = position,
@@ -1915,11 +1974,11 @@ private fun FullPlayer(
                 onSeek = onSeek
             )
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(timeText(position), color = MutedLavender, fontSize = 12.sp)
-                Text(timeText(duration), color = MutedLavender, fontSize = 12.sp)
+                Text(timeText(position), color = MutedLavender, fontSize = 11.sp)
+                Text(timeText(duration), color = MutedLavender, fontSize = 11.sp)
             }
 
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(6.dp))
 
             // Transport Controls
             Row(
@@ -1931,11 +1990,11 @@ private fun FullPlayer(
                     Icon(Icons.Default.Shuffle, null, tint = if (shuffle) secondaryAccent else MutedLavender)
                 }
                 BouncyIconButton(onClick = onPrevious) {
-                    Icon(Icons.Default.SkipPrevious, null, tint = Color.White, modifier = Modifier.size(38.dp))
+                    Icon(Icons.Default.SkipPrevious, null, tint = Color.White, modifier = Modifier.size(36.dp))
                 }
                 BouncyButton(
                     onClick = onPlayPause,
-                    modifier = Modifier.size(68.dp)
+                    modifier = Modifier.size(66.dp)
                 ) {
                     Surface(
                         shape = CircleShape,
@@ -1948,13 +2007,13 @@ private fun FullPlayer(
                                 if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                                 null,
                                 tint = Color.White,
-                                modifier = Modifier.size(38.dp)
+                                modifier = Modifier.size(36.dp)
                             )
                         }
                     }
                 }
                 BouncyIconButton(onClick = onNext) {
-                    Icon(Icons.Default.SkipNext, null, tint = Color.White, modifier = Modifier.size(38.dp))
+                    Icon(Icons.Default.SkipNext, null, tint = Color.White, modifier = Modifier.size(36.dp))
                 }
                 BouncyIconButton(onClick = onRepeat) {
                     Icon(
@@ -1964,7 +2023,7 @@ private fun FullPlayer(
                     )
                 }
             }
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(6.dp))
         }
     }
 }
@@ -2003,9 +2062,10 @@ fun BouncyButton(
 fun BouncyIconButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    size: Dp = 44.dp,
     content: @Composable () -> Unit
 ) {
-    BouncyButton(onClick = onClick, modifier = modifier.size(44.dp)) {
+    BouncyButton(onClick = onClick, modifier = modifier.size(size)) {
         content()
     }
 }
@@ -2055,6 +2115,8 @@ private fun FloatingBottomNavBar(
                             tab.label,
                             color = if (selected) activeColor else MutedLavender.copy(alpha = 0.5f),
                             fontSize = 9.sp,
+                            maxLines = 1,
+                            softWrap = false,
                             fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
                         )
                     }
@@ -2292,15 +2354,14 @@ private fun LibraryScreen(
             ) {
                 Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = ElectricCyan, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
-                Text(filterKey, color = ElectricCyan, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                Text(filterKey, color = ElectricCyan, fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                 Spacer(Modifier.width(6.dp))
-                Text("(${songsToDisplay.size} tracks)", color = MutedLavender, fontSize = 12.sp)
-                Spacer(Modifier.weight(1f))
+                Text("(${songsToDisplay.size})", color = MutedLavender, fontSize = 12.sp)
                 if (mode == "Artists") {
                     TextButton(onClick = { onShowBio(filterKey) }) {
                         Icon(Icons.Default.Info, null, tint = ElectricCyan, modifier = Modifier.size(15.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("Artist Bio", color = ElectricCyan, fontSize = 12.sp)
+                        Text("Bio", color = ElectricCyan, fontSize = 12.sp)
                     }
                 }
             }
@@ -2748,7 +2809,7 @@ private fun SongCard(
 private fun SongThumb(song: Song, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     var embeddedBitmap by remember(song.id, song.albumArtUri) { mutableStateOf<ImageBitmap?>(null) }
-    val hasDownloadedOverride = song.albumArtUri?.startsWith("file://") == true
+    val hasDownloadedOverride = song.albumArtUri?.startsWith("file://") == true || song.albumArtUri?.startsWith("http") == true
 
     LaunchedEffect(song.id, song.albumArtUri) {
         if (!hasDownloadedOverride) {
@@ -2859,7 +2920,7 @@ private fun TagEditorAndFingerprintDialog(
                             album = fix.album
                             matchConfidence = fix.matchConfidence
                             if (fix.albumArtUrl != null) {
-                                onlineCoverUri = ArtworkScraper.saveDownloadedCoverToFile(context, song, fix.albumArtUrl)
+                                onlineCoverUri = ArtworkScraper.saveDownloadedCoverToFile(context, song, fix.albumArtUrl) ?: fix.albumArtUrl
                             }
                             isFingerprinting = false
                         }
@@ -2910,6 +2971,7 @@ private fun SettingsScreen(
     timerMinutes: Int,
     timerLeft: Int,
     customTimer: String,
+    isScanningDuplicates: Boolean,
     onCustomTimerChange: (String) -> Unit,
     onSetTimer: (Int) -> Unit,
     onCancelTimer: () -> Unit,
@@ -3023,26 +3085,44 @@ private fun SettingsScreen(
         Text("LIBRARY METADATA & STORAGE SUITE", color = ElectricCyan, fontWeight = FontWeight.Bold, fontSize = 13.sp)
         Spacer(Modifier.height(6.dp))
         Text("$songCount tracks indexed from local storage.", color = MutedLavender, fontSize = 12.sp)
-        Spacer(Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = onRescan, colors = ButtonDefaults.buttonColors(containerColor = GlassPill)) {
-                Icon(Icons.Default.Refresh, null, tint = ElectricCyan)
-                Spacer(Modifier.width(4.dp))
-                Text("Rescan", color = ElectricCyan, fontSize = 12.sp)
+        Spacer(Modifier.height(10.dp))
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = onRescan,
+                colors = ButtonDefaults.buttonColors(containerColor = GlassPill),
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(Icons.Default.Refresh, null, tint = ElectricCyan, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Rescan", color = ElectricCyan, fontSize = 12.sp, maxLines = 1)
             }
-            Button(onClick = onAutoFixAll, colors = ButtonDefaults.buttonColors(containerColor = DeepViolet)) {
-                Icon(Icons.Default.AutoFixHigh, null, tint = ElectricCyan)
-                Spacer(Modifier.width(4.dp))
-                Text("Auto-Fix", color = Color.White, fontSize = 12.sp)
-            }
-            Button(onClick = onScanDuplicates, colors = ButtonDefaults.buttonColors(containerColor = GlassPill)) {
-                Icon(Icons.Default.CleaningServices, null, tint = ElectricCyan)
-                Spacer(Modifier.width(4.dp))
-                Text("Clean Duplicates", color = ElectricCyan, fontSize = 12.sp)
+            Button(
+                onClick = onAutoFixAll,
+                colors = ButtonDefaults.buttonColors(containerColor = DeepViolet),
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(Icons.Default.AutoFixHigh, null, tint = ElectricCyan, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Auto-Fix All", color = Color.White, fontSize = 12.sp, maxLines = 1)
             }
         }
+        Spacer(Modifier.height(8.dp))
+        Button(
+            onClick = onScanDuplicates,
+            enabled = !isScanningDuplicates,
+            colors = ButtonDefaults.buttonColors(containerColor = GlassPill),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Icon(Icons.Default.CleaningServices, null, tint = ElectricCyan, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
+            Text(
+                if (isScanningDuplicates) "Scanning Bitrates & Duplicates..." else "Scan Duplicates & Low Bitrate Files",
+                color = ElectricCyan,
+                fontSize = 12.sp
+            )
+        }
         Spacer(Modifier.height(20.dp))
-        Text("SONIQ v0.7.0 • Production Release", color = MutedLavender.copy(alpha = 0.5f), fontSize = 11.sp)
+        Text("SONIQ v0.8.0 • Android 14+ Production Release", color = MutedLavender.copy(alpha = 0.5f), fontSize = 11.sp)
     }
 }
 

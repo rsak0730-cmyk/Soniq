@@ -11,8 +11,10 @@ import android.media.AudioManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import androidx.core.content.ContextCompat
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
@@ -23,12 +25,10 @@ import com.soniq.player.audio.SoftwareDspEngine
 import com.soniq.player.data.SonicStatsEngine
 
 class PlaybackService : MediaSessionService() {
-
     private var session: MediaSession? = null
     private var noisyReceiver: AudioNoisyReceiver? = null
     private var notificationReceiver: NotificationFadeReceiver? = null
     private val crossfadeHandler = Handler(Looper.getMainLooper())
-
     private var audioManager: AudioManager? = null
     private var focusRequest: AudioFocusRequest? = null
     private var isDucked = false
@@ -40,8 +40,7 @@ class PlaybackService : MediaSessionService() {
             SoftwareDspEngine.attachLoudness(audioSessionId)
         }
 
-        override fun onMediaItemTransition(mediaItem: androidx.media3.common.MediaItem?, reason: Int) {
-            // Volume reset upon track switch
+        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             session?.player?.let { p ->
                 if (!isDucked) p.volume = 1.0f
             }
@@ -59,7 +58,7 @@ class PlaybackService : MediaSessionService() {
                     .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
                     .setUsage(C.USAGE_MEDIA)
                     .build(),
-                false // Custom smart notification auto-fade focus handling
+                false
             )
             .build()
 
@@ -72,20 +71,14 @@ class PlaybackService : MediaSessionService() {
         setupCrossfadeMonitor(player)
     }
 
-    /**
-     * Smart Audio Auto-Fade on Incoming Notifications.
-     * Smoothly ducks volume down to 18% when notification rings, then glides back up to 100%.
-     */
     private fun setupSmartAudioFocus(player: ExoPlayer) {
         val focusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
             when (focusChange) {
                 AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
-                    // Incoming Notification: Smooth Auto-Fade Out to 0.18f
                     fadeVolume(player, player.volume, 0.18f, 350L)
                     isDucked = true
                 }
                 AudioManager.AUDIOFOCUS_GAIN -> {
-                    // Notification finished: Smooth Auto-Fade Back to 1.0f
                     if (isDucked) {
                         fadeVolume(player, player.volume, 1.0f, 600L)
                         isDucked = false
@@ -94,9 +87,7 @@ class PlaybackService : MediaSessionService() {
                         player.play()
                     }
                 }
-                AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
-                    if (player.isPlaying) player.pause()
-                }
+                AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
                 AudioManager.AUDIOFOCUS_LOSS -> {
                     if (player.isPlaying) player.pause()
                 }
@@ -104,7 +95,7 @@ class PlaybackService : MediaSessionService() {
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+            val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
                 .setAudioAttributes(
                     AndroidAudioAttributes.Builder()
                         .setUsage(AndroidAudioAttributes.USAGE_MEDIA)
@@ -114,8 +105,8 @@ class PlaybackService : MediaSessionService() {
                 .setAcceptsDelayedFocusGain(true)
                 .setOnAudioFocusChangeListener(focusChangeListener)
                 .build()
-
-            audioManager?.requestAudioFocus(focusRequest!!)
+            focusRequest = req
+            audioManager?.requestAudioFocus(req)
         } else {
             @Suppress("DEPRECATION")
             audioManager?.requestAudioFocus(
@@ -127,45 +118,56 @@ class PlaybackService : MediaSessionService() {
     }
 
     private fun setupNotificationFadeReceiver(player: ExoPlayer) {
-        notificationReceiver = NotificationFadeReceiver { isIncomingAlert ->
+        val receiver = NotificationFadeReceiver { isIncomingAlert ->
             if (isIncomingAlert) {
                 fadeVolume(player, player.volume, 0.18f, 300L)
             } else {
                 fadeVolume(player, player.volume, 1.0f, 500L)
             }
         }
+        notificationReceiver = receiver
         val filter = IntentFilter().apply {
             addAction("android.media.RINGER_MODE_CHANGED")
             addAction("android.intent.action.PHONE_STATE")
         }
-        registerReceiver(notificationReceiver, filter)
+        // Fix for Android 14+ SecurityException on dynamic BroadcastReceiver registration
+        runCatching {
+            ContextCompat.registerReceiver(
+                this,
+                receiver,
+                filter,
+                ContextCompat.RECEIVER_NOT_EXPORTED
+            )
+        }
     }
 
     private fun fadeVolume(player: ExoPlayer, from: Float, to: Float, durationMs: Long) {
-        val animator = ValueAnimator.ofFloat(from, to).apply {
+        ValueAnimator.ofFloat(from, to).apply {
             duration = durationMs
             addUpdateListener { anim ->
-                player.volume = anim.animatedValue as Float
+                runCatching { player.volume = anim.animatedValue as Float }
             }
+            start()
         }
-        animator.start()
     }
 
     private fun setupCrossfadeMonitor(player: ExoPlayer) {
         val checkInterval = 500L
         val monitorRunnable = object : Runnable {
             override fun run() {
-                val duration = player.duration
-                val pos = player.currentPosition
-                if (!isDucked && player.isPlaying && duration > 0 && (duration - pos) in 1..4000) {
-                    val remainingMs = duration - pos
-                    val factor = (remainingMs / 4000f).coerceIn(0.1f, 1f)
-                    player.volume = factor
-                } else if (!isDucked && player.volume < 1.0f && player.currentPosition < 3000) {
-                    val factor = (player.currentPosition / 3000f).coerceIn(0.1f, 1f)
-                    player.volume = factor
-                } else if (!isDucked && player.volume < 1.0f && duration - pos > 4000) {
-                    player.volume = 1.0f
+                runCatching {
+                    val duration = player.duration
+                    val pos = player.currentPosition
+                    if (!isDucked && player.isPlaying && duration > 0 && (duration - pos) in 1..4000) {
+                        val remainingMs = duration - pos
+                        val factor = (remainingMs / 4000f).coerceIn(0.1f, 1f)
+                        player.volume = factor
+                    } else if (!isDucked && player.volume < 1.0f && player.currentPosition < 3000) {
+                        val factor = (player.currentPosition / 3000f).coerceIn(0.1f, 1f)
+                        player.volume = factor
+                    } else if (!isDucked && player.volume < 1.0f && duration - pos > 4000) {
+                        player.volume = 1.0f
+                    }
                 }
                 crossfadeHandler.postDelayed(this, checkInterval)
             }
@@ -178,12 +180,10 @@ class PlaybackService : MediaSessionService() {
     override fun onDestroy() {
         crossfadeHandler.removeCallbacksAndMessages(null)
         noisyReceiver?.unregister()
-        notificationReceiver?.let { unregisterReceiver(it) }
-
+        notificationReceiver?.let { runCatching { unregisterReceiver(it) } }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             focusRequest?.let { audioManager?.abandonAudioFocusRequest(it) }
         }
-
         RealtimeFftMonitor.release()
         SoftwareDspEngine.detach()
         session?.let {
