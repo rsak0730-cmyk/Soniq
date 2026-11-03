@@ -187,7 +187,10 @@ fun SoniqApp() {
     var playerOffsetY by remember { mutableFloatStateOf(0f) }
     val gyroEngine = remember { GyroscopeParallaxEngine(context) }
 
+    // Independent Slowed and Reverb sliders state
     var currentSpeedMode by remember { mutableStateOf("Normal") }
+    var slowedSpeedFactor by remember { mutableFloatStateOf(0.85f) }
+    var reverbStrengthFactor by remember { mutableFloatStateOf(0.70f) }
 
     DisposableEffect(Unit) {
         SonicStatsEngine.init(context)
@@ -237,23 +240,33 @@ fun SoniqApp() {
         if (openFullPlayer) showPlayer = true
     }
 
-    fun applySpeedMode(mode: String) {
+    fun applyPlaybackSettings(mode: String, speed: Float, reverb: Float) {
         val c = controller ?: return
         currentSpeedMode = mode
         when (mode) {
             "Nightcore" -> {
                 c.playbackParameters = PlaybackParameters(1.25f, 1.25f)
-            }
-            "Slowed" -> {
-                c.playbackParameters = PlaybackParameters(0.85f, 0.85f)
                 runCatching {
                     if (AudioEffectsBridge.isAvailable() && AudioEffectsBridge.virtualizerSupported()) {
-                        AudioEffectsBridge.setVirtualizerStrength(700)
+                        AudioEffectsBridge.setVirtualizerStrength(0)
+                    }
+                }
+            }
+            "Slowed" -> {
+                c.playbackParameters = PlaybackParameters(speed, speed)
+                runCatching {
+                    if (AudioEffectsBridge.isAvailable() && AudioEffectsBridge.virtualizerSupported()) {
+                        AudioEffectsBridge.setVirtualizerStrength((reverb * 1000f).roundToInt())
                     }
                 }
             }
             else -> {
                 c.playbackParameters = PlaybackParameters(1.0f, 1.0f)
+                runCatching {
+                    if (AudioEffectsBridge.isAvailable() && AudioEffectsBridge.virtualizerSupported()) {
+                        AudioEffectsBridge.setVirtualizerStrength(0)
+                    }
+                }
             }
         }
     }
@@ -440,7 +453,7 @@ fun SoniqApp() {
                     .padding(bottom = bottomPadding)
                     .padding(horizontal = 16.dp)
             ) {
-                // Header
+                // Brand Header
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -474,7 +487,7 @@ fun SoniqApp() {
                     }
                 }
 
-                // Contextual Universal Search Bar
+                // Contextual Search Bar
                 AnimatedVisibility(visible = currentTab == MainTab.HOME || currentTab == MainTab.LIBRARY) {
                     Column {
                         OutlinedTextField(
@@ -756,6 +769,7 @@ fun SoniqApp() {
                 )
             }
 
+            // Full Player Screen
             if (showPlayer && currentSong != null) {
                 val animatedOffsetY by animateFloatAsState(
                     targetValue = playerOffsetY,
@@ -787,7 +801,19 @@ fun SoniqApp() {
                         shuffle = shuffle,
                         repeatMode = repeatMode,
                         speedMode = currentSpeedMode,
-                        onSpeedModeChange = { applySpeedMode(it) },
+                        slowedSpeedFactor = slowedSpeedFactor,
+                        reverbStrengthFactor = reverbStrengthFactor,
+                        onSlowedSpeedChange = { speed ->
+                            slowedSpeedFactor = speed
+                            applyPlaybackSettings("Slowed", speed, reverbStrengthFactor)
+                        },
+                        onReverbStrengthChange = { rev ->
+                            reverbStrengthFactor = rev
+                            applyPlaybackSettings("Slowed", slowedSpeedFactor, rev)
+                        },
+                        onSpeedModeChange = { mode ->
+                            applyPlaybackSettings(mode, slowedSpeedFactor, reverbStrengthFactor)
+                        },
                         isFavorite = currentSong!!.id.toString() in favorites,
                         primaryAccent = dynamicPrimaryColor,
                         secondaryAccent = dynamicSecondaryColor,
@@ -1471,6 +1497,10 @@ private fun FullPlayer(
     shuffle: Boolean,
     repeatMode: Int,
     speedMode: String,
+    slowedSpeedFactor: Float,
+    reverbStrengthFactor: Float,
+    onSlowedSpeedChange: (Float) -> Unit,
+    onReverbStrengthChange: (Float) -> Unit,
     onSpeedModeChange: (String) -> Unit,
     isFavorite: Boolean,
     primaryAccent: Color,
@@ -1548,7 +1578,7 @@ private fun FullPlayer(
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
-                .padding(horizontal = 24.dp, vertical = 12.dp),
+                .padding(horizontal = 20.dp, vertical = 8.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Box(
@@ -1557,48 +1587,124 @@ private fun FullPlayer(
                     .clip(CircleShape)
                     .background(MutedLavender.copy(alpha = 0.45f))
             )
-            Spacer(Modifier.height(8.dp))
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                BouncyIconButton(onClick = onClose) { Icon(Icons.Default.KeyboardArrowDown, null, tint = Color.White) }
-                Text("NOW PLAYING", color = MutedLavender, modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold, fontSize = 13.sp, letterSpacing = 1.sp)
-                BouncyIconButton(onClick = onShareStoryCard) {
-                    Icon(Icons.Default.Share, contentDescription = "Story Share Card", tint = secondaryAccent)
+            Spacer(Modifier.height(6.dp))
+
+            // Fixed Top Header Row
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    BouncyIconButton(onClick = onClose) {
+                        Icon(Icons.Default.KeyboardArrowDown, null, tint = Color.White, modifier = Modifier.size(28.dp))
+                    }
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        "NOW PLAYING",
+                        color = MutedLavender,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        letterSpacing = 1.sp,
+                        maxLines = 1
+                    )
                 }
-                BouncyIconButton(onClick = onPlaySimilarRadio) {
-                    Icon(Icons.Default.AutoAwesome, contentDescription = "Smart Radio", tint = primaryAccent)
-                }
-                BouncyIconButton(onClick = onShowBio) {
-                    Icon(Icons.Default.Info, contentDescription = "Artist Bio", tint = secondaryAccent)
-                }
-                BouncyIconButton(onClick = { showLyrics = !showLyrics }) {
-                    Icon(Icons.Default.Lyrics, contentDescription = "Lyrics", tint = if (showLyrics) secondaryAccent else MutedLavender)
-                }
-                BouncyIconButton(onClick = onOpenEqualizer) {
-                    Icon(Icons.Default.Equalizer, contentDescription = "Stems & Equalizer", tint = secondaryAccent)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    BouncyIconButton(onClick = onShareStoryCard) {
+                        Icon(Icons.Default.Share, "Share", tint = secondaryAccent, modifier = Modifier.size(20.dp))
+                    }
+                    BouncyIconButton(onClick = onPlaySimilarRadio) {
+                        Icon(Icons.Default.AutoAwesome, "Radio", tint = primaryAccent, modifier = Modifier.size(20.dp))
+                    }
+                    BouncyIconButton(onClick = onShowBio) {
+                        Icon(Icons.Default.Info, "Bio", tint = secondaryAccent, modifier = Modifier.size(20.dp))
+                    }
+                    BouncyIconButton(onClick = { showLyrics = !showLyrics }) {
+                        Icon(Icons.Default.Lyrics, "Lyrics", tint = if (showLyrics) secondaryAccent else MutedLavender, modifier = Modifier.size(20.dp))
+                    }
+                    BouncyIconButton(onClick = onOpenEqualizer) {
+                        Icon(Icons.Default.Equalizer, "EQ", tint = secondaryAccent, modifier = Modifier.size(20.dp))
+                    }
                 }
             }
 
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(4.dp))
 
-            // Speed & Pitch Chips
+            // Mode Selector Row
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center
+                horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 listOf("Normal", "Nightcore", "Slowed").forEach { mode ->
                     val isSel = speedMode == mode
                     Surface(
                         shape = RoundedCornerShape(12.dp),
-                        color = if (isSel) secondaryAccent.copy(alpha = 0.25f) else Color.Transparent,
+                        color = if (isSel) secondaryAccent.copy(alpha = 0.22f) else Color(0x2218102C),
                         border = BorderStroke(1.dp, if (isSel) secondaryAccent else Color(0x33C7BCE0)),
-                        modifier = Modifier.padding(horizontal = 4.dp).clickable { onSpeedModeChange(mode) }
+                        modifier = Modifier
+                            .height(32.dp)
+                            .clickable { onSpeedModeChange(mode) }
                     ) {
-                        Text(
-                            text = if (mode == "Nightcore") "⚡ 1.25x Nightcore" else if (mode == "Slowed") "🌌 Slowed + Reverb" else "1.0x Normal",
-                            color = if (isSel) secondaryAccent else MutedLavender,
-                            fontSize = 11.sp,
-                            fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 10.dp)) {
+                            Text(
+                                text = when (mode) {
+                                    "Nightcore" -> "⚡ 1.25x Nightcore"
+                                    "Slowed" -> "🌌 Slowed + Reverb"
+                                    else -> "1.0x Normal"
+                                },
+                                color = if (isSel) secondaryAccent else MutedLavender,
+                                fontSize = 11.sp,
+                                fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Expanded Slowed + Reverb Control Sliders
+            AnimatedVisibility(visible = speedMode == "Slowed") {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = Color(0x5518102C),
+                    border = BorderStroke(1.dp, GlassBorder),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp, bottom = 4.dp)
+                ) {
+                    Column(Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Tempo (Slowed Factor)", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            Text("%.2fx".format(slowedSpeedFactor), color = secondaryAccent, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                        Slider(
+                            value = slowedSpeedFactor,
+                            onValueChange = onSlowedSpeedChange,
+                            valueRange = 0.60f..0.95f,
+                            colors = SliderDefaults.colors(thumbColor = secondaryAccent, activeTrackColor = secondaryAccent),
+                            modifier = Modifier.height(28.dp)
+                        )
+
+                        Spacer(Modifier.height(4.dp))
+
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("3D Reverb / Spatial", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            Text("${(reverbStrengthFactor * 100).roundToInt()}%", color = primaryAccent, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                        Slider(
+                            value = reverbStrengthFactor,
+                            onValueChange = onReverbStrengthChange,
+                            valueRange = 0.0f..1.0f,
+                            colors = SliderDefaults.colors(thumbColor = primaryAccent, activeTrackColor = primaryAccent),
+                            modifier = Modifier.height(28.dp)
                         )
                     }
                 }
@@ -1657,7 +1763,7 @@ private fun FullPlayer(
 
                     Canvas(
                         Modifier
-                            .size(280.dp)
+                            .size(270.dp)
                             .aspectRatio(1f)
                             .pointerInput(duration) {
                                 detectTapGestures { tapOffset ->
@@ -1766,7 +1872,7 @@ private fun FullPlayer(
                         secondaryColor = secondaryAccent,
                         gyroPitch = gyroPitch,
                         gyroRoll = gyroRoll,
-                        modifier = Modifier.size(210.dp)
+                        modifier = Modifier.size(200.dp)
                     )
 
                     if (isPlaying) {
@@ -1778,14 +1884,17 @@ private fun FullPlayer(
                     }
                 }
             }
-            Spacer(Modifier.height(10.dp))
+
+            Spacer(Modifier.height(8.dp))
+
+            // Song Info & Favorite
             Row(
                 Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(Modifier.weight(1f)) {
-                    Text(song.title, color = Color.White, fontSize = 21.sp, fontWeight = FontWeight.Black, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text("${song.artist} • ${song.album}", color = MutedLavender, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(song.title, color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Black, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("${song.artist} • ${song.album}", color = MutedLavender, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 IconButton(onClick = onToggleFavorite) {
                     Icon(
@@ -1795,7 +1904,9 @@ private fun FullPlayer(
                     )
                 }
             }
-            Spacer(Modifier.height(8.dp))
+
+            Spacer(Modifier.height(6.dp))
+
             WaveformSeekScrubber(
                 position = position,
                 duration = duration,
@@ -1807,7 +1918,10 @@ private fun FullPlayer(
                 Text(timeText(position), color = MutedLavender, fontSize = 12.sp)
                 Text(timeText(duration), color = MutedLavender, fontSize = 12.sp)
             }
-            Spacer(Modifier.height(10.dp))
+
+            Spacer(Modifier.height(8.dp))
+
+            // Transport Controls
             Row(
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceEvenly,
@@ -1821,7 +1935,7 @@ private fun FullPlayer(
                 }
                 BouncyButton(
                     onClick = onPlayPause,
-                    modifier = Modifier.size(72.dp)
+                    modifier = Modifier.size(68.dp)
                 ) {
                     Surface(
                         shape = CircleShape,
@@ -1834,7 +1948,7 @@ private fun FullPlayer(
                                 if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                                 null,
                                 tint = Color.White,
-                                modifier = Modifier.size(40.dp)
+                                modifier = Modifier.size(38.dp)
                             )
                         }
                     }
@@ -1850,7 +1964,7 @@ private fun FullPlayer(
                     )
                 }
             }
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(8.dp))
         }
     }
 }
@@ -1891,7 +2005,7 @@ fun BouncyIconButton(
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit
 ) {
-    BouncyButton(onClick = onClick, modifier = modifier.size(48.dp)) {
+    BouncyButton(onClick = onClick, modifier = modifier.size(44.dp)) {
         content()
     }
 }
