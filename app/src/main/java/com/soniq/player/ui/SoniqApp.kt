@@ -148,14 +148,12 @@ fun SoniqApp() {
     var recents by remember { mutableStateOf<List<String>>(prefs.getString("recents_ordered", "")?.split("|")?.filter { it.isNotBlank() } ?: emptyList()) }
     var searchHistory by remember { mutableStateOf<List<String>>(prefs.getString("search_history_ordered", "")?.split("|")?.filter { it.isNotBlank() }?.take(6) ?: emptyList()) }
 
-    // Batch Auto-Fix State
     var isBatchFixing by remember { mutableStateOf(false) }
     var batchCurrent by remember { mutableIntStateOf(0) }
     var batchTotal by remember { mutableIntStateOf(0) }
     var batchTrackName by remember { mutableStateOf("") }
     var batchSummary by remember { mutableStateOf<String?>(null) }
 
-    // Playlists state
     var playlists by remember { mutableStateOf<List<String>>(prefs.getStringSet("playlists", setOf("Favorites", "Workout", "Late Night"))?.toList()?.sorted() ?: listOf("Favorites")) }
     var selectedPlaylist by remember { mutableStateOf("Favorites") }
     var playlistSongs by remember { mutableStateOf<Set<String>>(prefs.getString("playlist_Favorites", "")?.split("|")?.filter { it.isNotBlank() }?.toSet() ?: emptySet()) }
@@ -163,7 +161,6 @@ fun SoniqApp() {
     var newPlaylistName by remember { mutableStateOf("") }
     var addToPlaylistSong by remember { mutableStateOf<Song?>(null) }
 
-    // Custom Albums state
     var customAlbums by remember { mutableStateOf<List<String>>(prefs.getStringSet("custom_albums", emptySet())?.toList()?.sorted() ?: emptyList()) }
     var showCreateAlbum by remember { mutableStateOf(false) }
     var newAlbumName by remember { mutableStateOf("") }
@@ -700,7 +697,7 @@ fun SoniqApp() {
                 }
             }
 
-            // Batch Fix Progress / Result Dialog
+            // Batch Fix Dialog
             AutoFixBatchDialog(
                 isRunning = isBatchFixing,
                 current = batchCurrent,
@@ -1046,6 +1043,7 @@ fun LiquidWaterWaveBackground(
     }
 }
 
+// FIX: Strictly constrained to a square aspect ratio so it stays a perfect circle
 @Composable
 private fun LiquidOrbWaveformCenterpiece(
     song: Song,
@@ -1065,6 +1063,7 @@ private fun LiquidOrbWaveformCenterpiece(
     )
     Box(
         modifier = modifier
+            .aspectRatio(1f) // Fix: Always forces width == height for a 100% true circle
             .graphicsLayer {
                 rotationX = gyroPitch * 14f
                 rotationY = gyroRoll * 14f
@@ -1115,7 +1114,13 @@ private fun LiquidOrbWaveformCenterpiece(
             )
             drawContext.canvas.restore()
         }
-        SongThumb(song = song, modifier = Modifier.fillMaxSize(0.96f).clip(CircleShape))
+        SongThumb(
+            song = song, 
+            modifier = Modifier
+                .fillMaxSize(0.96f)
+                .aspectRatio(1f)
+                .clip(CircleShape) // Fix: Always clips to perfect circle bounds
+        )
     }
 }
 
@@ -1321,9 +1326,11 @@ private fun FullPlayer(
                     var isDraggingSeeker by remember { mutableStateOf(false) }
                     val touchZoneTolerancePx = with(density) { 26.dp.toPx() }
 
+                    // Seek Dial Ring
                     Canvas(
                         Modifier
-                            .size(310.dp)
+                            .size(280.dp) // Proportional square dial size
+                            .aspectRatio(1f)
                             .pointerInput(duration) {
                                 detectTapGestures { tapOffset ->
                                     val dx = tapOffset.x - canvasCenter.x
@@ -1368,7 +1375,7 @@ private fun FullPlayer(
                         canvasCenter = center
                         val strokeWidth = 3.2.dp.toPx()
                         val outerGlowWidth = 7.dp.toPx()
-                        val baseRadius = (size.width - 24.dp.toPx()) / 2f
+                        val baseRadius = (size.minDimension - 24.dp.toPx()) / 2f
                         baseRadiusPx = baseRadius
                         drawCircle(
                             color = Color(0x352B194E),
@@ -1423,6 +1430,8 @@ private fun FullPlayer(
                             drawCircle(color = secondaryAccent, radius = (dropletRadius * 0.5f), center = Offset(tipX, tipY))
                         }
                     }
+
+                    // True Circular Rotating Artwork Centerpiece
                     LiquidOrbWaveformCenterpiece(
                         song = song,
                         isPlaying = isPlaying,
@@ -1430,8 +1439,9 @@ private fun FullPlayer(
                         secondaryColor = secondaryAccent,
                         gyroPitch = gyroPitch,
                         gyroRoll = gyroRoll,
-                        modifier = Modifier.size(225.dp)
+                        modifier = Modifier.size(210.dp)
                     )
+
                     if (isPlaying) {
                         MiniVisualizer(
                             accent1 = secondaryAccent,
@@ -2270,6 +2280,7 @@ private fun SongCard(
     }
 }
 
+// FIX: Always enforces square aspect ratio so artworks do not turn oval
 @Composable
 private fun SongThumb(song: Song, modifier: Modifier = Modifier) {
     val context = LocalContext.current
@@ -2290,6 +2301,8 @@ private fun SongThumb(song: Song, modifier: Modifier = Modifier) {
         }
     }
 
+    val baseModifier = modifier.aspectRatio(1f)
+
     if (hasDownloadedOverride && !song.albumArtUri.isNullOrBlank()) {
         AsyncImage(
             model = ImageRequest.Builder(context)
@@ -2298,14 +2311,14 @@ private fun SongThumb(song: Song, modifier: Modifier = Modifier) {
                 .build(),
             contentDescription = "Artwork",
             contentScale = ContentScale.Crop,
-            modifier = modifier.clip(RoundedCornerShape(14.dp))
+            modifier = baseModifier.clip(RoundedCornerShape(14.dp))
         )
     } else if (embeddedBitmap != null) {
         Image(
             bitmap = embeddedBitmap!!,
             contentDescription = "Artwork",
             contentScale = ContentScale.Crop,
-            modifier = modifier.clip(RoundedCornerShape(14.dp))
+            modifier = baseModifier.clip(RoundedCornerShape(14.dp))
         )
     } else if (!song.albumArtUri.isNullOrBlank()) {
         AsyncImage(
@@ -2315,11 +2328,11 @@ private fun SongThumb(song: Song, modifier: Modifier = Modifier) {
                 .build(),
             contentDescription = "Artwork",
             contentScale = ContentScale.Crop,
-            modifier = modifier.clip(RoundedCornerShape(14.dp))
+            modifier = baseModifier.clip(RoundedCornerShape(14.dp))
         )
     } else {
         Box(
-            modifier = modifier
+            modifier = baseModifier
                 .background(Brush.linearGradient(listOf(NeonPurple, ElectricCyan)), RoundedCornerShape(14.dp)),
             contentAlignment = Alignment.Center
         ) {
