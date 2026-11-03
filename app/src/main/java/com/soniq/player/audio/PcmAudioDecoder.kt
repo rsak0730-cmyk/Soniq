@@ -15,8 +15,9 @@ import java.util.zip.Deflater
 
 object PcmAudioDecoder {
 
-    private const val MAX_DECODE_DURATION_US = 120_000_000L
-    private const val TIMEOUT_US = 5000L
+    // Optimized: Only decode the first 12 seconds instead of 120s (10x faster)
+    private const val MAX_DECODE_DURATION_US = 12_000_000L
+    private const val TIMEOUT_US = 2500L
 
     suspend fun extractFingerprintData(context: Context, audioUri: Uri): Pair<Int, String>? = withContext(Dispatchers.IO) {
         val extractor = MediaExtractor()
@@ -51,7 +52,7 @@ object PcmAudioDecoder {
             codec.configure(format, null, null, 0)
             codec.start()
 
-            val pcmDataStream = ByteArrayOutputStream()
+            val pcmDataStream = ByteArrayOutputStream(32 * 1024)
             val bufferInfo = MediaCodec.BufferInfo()
             var isEOS = false
 
@@ -89,7 +90,7 @@ object PcmAudioDecoder {
             val pcmBytes = pcmDataStream.toByteArray()
             if (pcmBytes.isEmpty()) return@withContext null
 
-            val fingerprintString = generateAcoustIdFingerprint(pcmBytes)
+            val fingerprintString = generateFastFingerprint(pcmBytes)
             Pair(totalSeconds, fingerprintString)
         } catch (e: Exception) {
             e.printStackTrace()
@@ -103,12 +104,12 @@ object PcmAudioDecoder {
         }
     }
 
-    private fun generateAcoustIdFingerprint(pcmAudio: ByteArray): String {
+    private fun generateFastFingerprint(pcmAudio: ByteArray): String {
         val shortBuffer = ByteBuffer.wrap(pcmAudio).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
         val totalSamples = shortBuffer.remaining()
-        val step = (totalSamples / 1024).coerceAtLeast(1)
+        val step = (totalSamples / 512).coerceAtLeast(1)
 
-        val intHashes = mutableListOf<Int>()
+        val intHashes = ArrayList<Int>(512)
         var currentHash = 0x55555555
 
         for (i in 0 until totalSamples step step) {
@@ -122,12 +123,12 @@ object PcmAudioDecoder {
             rawFingerprintBytes.putInt(h)
         }
 
-        val deflater = Deflater()
+        val deflater = Deflater(Deflater.BEST_SPEED)
         deflater.setInput(rawFingerprintBytes.array())
         deflater.finish()
 
-        val outputStream = ByteArrayOutputStream()
-        val buffer = ByteArray(1024)
+        val outputStream = ByteArrayOutputStream(1024)
+        val buffer = ByteArray(512)
         while (!deflater.finished()) {
             val count = deflater.deflate(buffer)
             outputStream.write(buffer, 0, count)
