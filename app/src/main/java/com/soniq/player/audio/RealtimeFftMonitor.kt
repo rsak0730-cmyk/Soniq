@@ -33,16 +33,12 @@ object RealtimeFftMonitor {
                             val im = fft[i * 2 + 1].toFloat()
                             magnitudes[i] = hypot(r, im)
                         }
-
-                        // Low-band bass (indices 1..4)
                         val bass = (1..4.coerceAtMost(n - 1)).map { magnitudes[it] }.average().toFloat() / 128f
                         bassEnergy = bass.coerceIn(0f, 2.5f)
 
-                        // Mid-band (indices 5..12)
                         val mids = (5..12.coerceAtMost(n - 1)).map { magnitudes[it] }.average().toFloat() / 128f
                         midEnergy = mids.coerceIn(0f, 2f)
 
-                        // 16 Display bands
                         val chunk = (n / 16).coerceAtLeast(1)
                         val bands = FloatArray(16) { idx ->
                             val start = idx * chunk
@@ -57,6 +53,10 @@ object RealtimeFftMonitor {
                 }, Visualizer.getMaxCaptureRate() / 2, false, true)
                 enabled = true
             }
+        }.onFailure {
+            visualizer = null
+            bassEnergy = 0f
+            midEnergy = 0f
         }
     }
 
@@ -67,5 +67,6 @@ object RealtimeFftMonitor {
         }
         visualizer = null
         bassEnergy = 0f
+        midEnergy = 0f
     }
 }

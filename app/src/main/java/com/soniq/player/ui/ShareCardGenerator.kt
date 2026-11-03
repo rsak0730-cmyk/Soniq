@@ -38,7 +38,7 @@ object ShareCardGenerator {
             }
             canvas.drawCircle(width / 2f, height / 2.6f, 750f, glowPaint)
 
-            // 3. Draw Brand Watermark
+            // 3. Brand Text
             val brandPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = 0xFF53F6FF.toInt()
                 textSize = 54f
@@ -48,7 +48,7 @@ object ShareCardGenerator {
             }
             canvas.drawText("S O N I Q", width / 2f, 220f, brandPaint)
 
-            // 4. Load & Draw Album Cover
+            // 4. Load & Render Cover Art
             var coverBmp: Bitmap? = null
             if (!song.albumArtUri.isNullOrBlank() && song.albumArtUri.startsWith("http")) {
                 coverBmp = runCatching {
@@ -87,7 +87,7 @@ object ShareCardGenerator {
                 canvas.drawRoundRect(artRect, 48f, 48f, placeholderPaint)
             }
 
-            // Draw Cover Border
+            // Cover Outline
             val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 style = Paint.Style.STROKE
                 strokeWidth = 6f
@@ -95,7 +95,7 @@ object ShareCardGenerator {
             }
             canvas.drawRoundRect(artRect, 48f, 48f, borderPaint)
 
-            // 5. Song Title & Artist
+            // 5. Typography
             val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = Color.WHITE
                 textSize = 58f
@@ -113,7 +113,7 @@ object ShareCardGenerator {
             val safeArtist = if (song.artist.length > 30) song.artist.take(28) + "..." else song.artist
             canvas.drawText("$safeArtist • ${song.album}", width / 2f, 1280f, artistPaint)
 
-            // 6. Neon Soundwave Decoration
+            // 6. Soundwave Bars
             val wavePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 shader = LinearGradient(0f, 1400f, 0f, 1540f, 0xFF53F6FF.toInt(), 0xFF9B6CFF.toInt(), Shader.TileMode.CLAMP)
             }
@@ -130,7 +130,7 @@ object ShareCardGenerator {
                 canvas.drawRoundRect(RectF(bx, by, bx + barWidth, by + bh), 8f, 8f, wavePaint)
             }
 
-            // 7. Footer Text
+            // 7. Footer
             val footerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = 0x88C7BCE0.toInt()
                 textSize = 30f
@@ -138,7 +138,7 @@ object ShareCardGenerator {
             }
             canvas.drawText("Listening on SONIQ Audio Player", width / 2f, 1720f, footerPaint)
 
-            // 8. Safe File Saving & Intent Creation
+            // 8. Safe File Saving & Intent Execution
             val cacheImagesDir = File(context.cacheDir, "images")
             if (!cacheImagesDir.exists()) cacheImagesDir.mkdirs()
 
@@ -159,6 +159,7 @@ object ShareCardGenerator {
                 }
 
                 val chooser = Intent.createChooser(shareIntent, "Share Track to Story").apply {
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
                 context.startActivity(chooser)
@@ -166,7 +167,7 @@ object ShareCardGenerator {
         } catch (e: Exception) {
             e.printStackTrace()
             withContext(Dispatchers.Main) {
-                Toast.makeText(context, "Could not generate share card: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "Could not share card: ${e.localizedMessage ?: "Unknown error"}", Toast.LENGTH_SHORT).show()
             }
         }
     }
