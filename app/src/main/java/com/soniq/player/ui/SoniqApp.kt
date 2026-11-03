@@ -64,7 +64,6 @@ import coil.request.ImageRequest
 import com.google.common.util.concurrent.MoreExecutors
 import com.soniq.player.audio.AudioDeviceMonitor
 import com.soniq.player.audio.AudioEffectsBridge
-import com.soniq.player.audio.AudioFingerprintFixer
 import com.soniq.player.audio.AudioOutput
 import com.soniq.player.audio.GyroscopeParallaxEngine
 import com.soniq.player.audio.RealtimeFftMonitor
@@ -113,21 +112,6 @@ private fun applySavedMetadataOverrides(rawSongs: List<Song>, prefs: SharedPrefe
     }.getOrDefault(rawSongs)
 }
 
-private fun saveMetadataOverride(prefs: SharedPreferences, songId: Long, title: String, artist: String, album: String, artUri: String?) {
-    runCatching {
-        val raw = prefs.getString("song_overrides", "{}") ?: "{}"
-        val root = JSONObject(raw)
-        val entry = JSONObject().apply {
-            put("title", title)
-            put("artist", artist)
-            put("album", album)
-            if (!artUri.isNullOrBlank()) put("art", artUri)
-        }
-        root.put(songId.toString(), entry)
-        prefs.edit().putString("song_overrides", root.toString()).apply()
-    }
-}
-
 @Composable
 fun SoniqApp() {
     val context = LocalContext.current
@@ -151,19 +135,8 @@ fun SoniqApp() {
     var recents by remember { mutableStateOf<List<String>>(prefs.getString("recents_ordered", "")?.split("|")?.filter { it.isNotBlank() } ?: emptyList()) }
     var searchHistory by remember { mutableStateOf<List<String>>(prefs.getString("search_history_ordered", "")?.split("|")?.filter { it.isNotBlank() }?.take(6) ?: emptyList()) }
 
-    var onlineResults by remember { mutableStateOf<List<OnlineTrack>>(emptyList()) }
-    var isSearchingOnline by remember { mutableStateOf(false) }
-
     var duplicateGroups by remember { mutableStateOf<List<DuplicateGroup>?>(null) }
     var isScanningDuplicates by remember { mutableStateOf(false) }
-
-    var isBatchFixing by remember { mutableStateOf(false) }
-    var batchCurrent by remember { mutableIntStateOf(0) }
-    var batchTotal by remember { mutableIntStateOf(0) }
-    var batchTrackName by remember { mutableStateOf("") }
-    var batchSummary by remember { mutableStateOf<String?>(null) }
-
-    var bioArtistName by remember { mutableStateOf<String?>(null) }
 
     var playlists by remember { mutableStateOf<List<String>>(prefs.getStringSet("playlists", setOf("Favorites", "Workout", "Late Night"))?.toList()?.sorted() ?: listOf("Favorites")) }
     var selectedPlaylist by remember { mutableStateOf("Favorites") }
@@ -180,7 +153,6 @@ fun SoniqApp() {
     var timerMinutes by remember { mutableIntStateOf(0) }
     var customTimer by remember { mutableStateOf("25") }
     var timerLeft by remember { mutableIntStateOf(0) }
-    var editTagSong by remember { mutableStateOf<Song?>(null) }
     var libraryMode by remember { mutableStateOf("Songs") }
     val listState = rememberLazyListState()
     var selectedFilterKey by remember { mutableStateOf<String?>(null) }
@@ -192,14 +164,12 @@ fun SoniqApp() {
     var reverbStrengthFactor by remember { mutableFloatStateOf(0.70f) }
 
     DisposableEffect(Unit) {
-        SonicStatsEngine.init(context)
         gyroEngine.start()
         onDispose { gyroEngine.stop() }
     }
 
-    BackHandler(enabled = showPlayer || bioArtistName != null || selectedFilterKey != null || currentTab != MainTab.HOME) {
+    BackHandler(enabled = showPlayer || selectedFilterKey != null || currentTab != MainTab.HOME) {
         when {
-            bioArtistName != null -> bioArtistName = null
             showPlayer -> showPlayer = false
             selectedFilterKey != null -> selectedFilterKey = null
             currentTab != MainTab.HOME -> currentTab = MainTab.HOME
@@ -232,7 +202,6 @@ fun SoniqApp() {
         isPlaying = true
         duration = song.durationMs
         position = 0L
-        SonicStatsEngine.recordPlayEvent(song)
         val updatedRecents = (listOf(song.id.toString()) + recents.filterNot { it == song.id.toString() }).take(30)
         recents = updatedRecents
         saveRecents(updatedRecents)
@@ -279,63 +248,6 @@ fun SoniqApp() {
                 }
                 context.startActivity(fallback)
             }
-        }
-    }
-
-    fun triggerBatchFix() {
-        if (isBatchFixing) return
-        val unknownList = songs.filter { AudioFingerprintFixer.isSongUnknown(it) }
-        if (unknownList.isEmpty()) {
-            batchSummary = "All tracks in your library are already identified!"
-            return
-        }
-
-        scope.launch {
-            isBatchFixing = true
-            batchTotal = unknownList.size
-            batchCurrent = 0
-
-            val count = AudioFingerprintFixer.batchFixAllUnknown(
-                context = context,
-                songs = songs,
-                onProgress = { cur, tot, name ->
-                    batchCurrent = cur
-                    batchTotal = tot
-                    batchTrackName = name
-                },
-                onSongFixed = { song, fix ->
-                    scope.launch {
-                        val savedArt = if (!fix.albumArtUrl.isNullOrBlank()) {
-                            ArtworkScraper.saveDownloadedCoverToFile(context, song, fix.albumArtUrl) ?: fix.albumArtUrl
-                        } else {
-                            song.albumArtUri
-                        }
-
-                        saveMetadataOverride(prefs, song.id, fix.title, fix.artist, fix.album, savedArt)
-
-                        songs = songs.map {
-                            if (it.id == song.id) it.copy(
-                                title = fix.title,
-                                artist = fix.artist,
-                                album = fix.album,
-                                albumArtUri = savedArt
-                            ) else it
-                        }
-
-                        if (currentSong?.id == song.id) {
-                            currentSong = currentSong?.copy(
-                                title = fix.title,
-                                artist = fix.artist,
-                                album = fix.album,
-                                albumArtUri = savedArt
-                            )
-                        }
-                    }
-                }
-            )
-
-            isBatchFixing = false
-            batchSummary = "Auto-fix complete! Successfully matched and updated $count songs."
         }
     }
 
@@ -387,16 +299,6 @@ fun SoniqApp() {
                     }
                     override fun onPlaybackStateChanged(state: Int) {
                         duration = c.duration.coerceAtLeast(0L)
-                        if (state == Player.STATE_ENDED && currentSong != null) {
-                            scope.launch {
-                                val similar = SimilarTracksEngine.getSimilarTracksOnline(currentSong!!)
-                                if (similar.isNotEmpty()) {
-                                    val next = similar.first()
-                                    playSong(next, similar, openFullPlayer = false)
-                                    Toast.makeText(context, "Smart Radio: Playing ${next.title}", Toast.LENGTH_SHORT).show()
-                                }
-                            }
-                        }
                     }
                 })
             }
@@ -452,7 +354,7 @@ fun SoniqApp() {
                     .padding(bottom = bottomPadding)
                     .padding(horizontal = 16.dp)
             ) {
-                // Brand Header
+                // Header
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -486,7 +388,7 @@ fun SoniqApp() {
                     }
                 }
 
-                // Contextual Search Bar
+                // Search Bar
                 AnimatedVisibility(visible = currentTab == MainTab.HOME || currentTab == MainTab.LIBRARY) {
                     Column {
                         OutlinedTextField(
@@ -505,7 +407,7 @@ fun SoniqApp() {
                             modifier = Modifier.fillMaxWidth(),
                             placeholder = {
                                 Text(
-                                    "Search local songs or tap Search Online...",
+                                    "Search songs, artists, albums, folders...",
                                     color = MutedLavender.copy(alpha = 0.6f),
                                     fontSize = 13.sp
                                 )
@@ -513,7 +415,7 @@ fun SoniqApp() {
                             leadingIcon = { Icon(Icons.Default.Search, null, tint = dynamicSecondaryColor) },
                             trailingIcon = {
                                 if (query.isNotEmpty()) {
-                                    IconButton(onClick = { query = ""; onlineResults = emptyList() }) {
+                                    IconButton(onClick = { query = "" }) {
                                         Icon(Icons.Default.Close, "Clear", tint = MutedLavender)
                                     }
                                 }
@@ -530,33 +432,6 @@ fun SoniqApp() {
                                 unfocusedContainerColor = Color(0x44140D26)
                             )
                         )
-
-                        if (query.trim().length >= 2 && currentTab == MainTab.LIBRARY) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(top = 4.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                TextButton(
-                                    onClick = {
-                                        scope.launch {
-                                            isSearchingOnline = true
-                                            onlineResults = OnlineStreamEngine.searchOnlineSongs(query)
-                                            isSearchingOnline = false
-                                            if (onlineResults.isEmpty()) {
-                                                Toast.makeText(context, "No online streams found for '$query'", Toast.LENGTH_SHORT).show()
-                                            }
-                                        }
-                                    }
-                                ) {
-                                    Icon(Icons.Default.CloudDownload, null, tint = ElectricCyan, modifier = Modifier.size(16.dp))
-                                    Spacer(Modifier.width(6.dp))
-                                    Text(if (isSearchingOnline) "Searching Online Streams..." else "Search Online Streams", color = ElectricCyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                }
-                            }
-                        }
 
                         if (query.isEmpty() && searchHistory.isNotEmpty() && currentTab == MainTab.LIBRARY) {
                             Row(
@@ -582,49 +457,6 @@ fun SoniqApp() {
                     }
                 }
 
-                if (onlineResults.isNotEmpty() && currentTab == MainTab.LIBRARY) {
-                    Column(Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
-                        Text("ONLINE STREAMS (TAP TO PLAY)", color = ElectricCyan, fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                        Spacer(Modifier.height(4.dp))
-                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            items(onlineResults, key = { it.videoId }) { ot ->
-                                Surface(
-                                    shape = RoundedCornerShape(16.dp),
-                                    color = Color(0x6618102C),
-                                    border = BorderStroke(1.dp, GlassBorder),
-                                    modifier = Modifier.width(180.dp).clickable {
-                                        val onlineSong = Song(
-                                            id = System.currentTimeMillis() + 5000L,
-                                            title = ot.title,
-                                            artist = ot.artist,
-                                            album = "Online Stream",
-                                            durationMs = ot.durationSec * 1000,
-                                            uri = ot.streamUrl,
-                                            albumArtUri = ot.thumbnail,
-                                            folder = "Online",
-                                            dateAdded = System.currentTimeMillis()
-                                        )
-                                        playSong(onlineSong, listOf(onlineSong))
-                                    }
-                                ) {
-                                    Column(Modifier.padding(8.dp)) {
-                                        AsyncImage(
-                                            model = ot.thumbnail,
-                                            contentDescription = null,
-                                            contentScale = ContentScale.Crop,
-                                            modifier = Modifier.fillMaxWidth().height(80.dp).clip(RoundedCornerShape(10.dp))
-                                        )
-                                        Spacer(Modifier.height(4.dp))
-                                        Text(ot.title, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                        Text(ot.artist, color = MutedLavender, fontSize = 10.sp, maxLines = 1)
-                                    }
-                                }
-                            }
-                        }
-                        Spacer(Modifier.height(8.dp))
-                    }
-                }
-
                 AnimatedContent(
                     targetState = currentTab,
                     transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(180)) },
@@ -643,8 +475,6 @@ fun SoniqApp() {
                             },
                             onAddToPlaylist = { addToPlaylistSong = it },
                             onAddToAlbum = { addToAlbumSong = it },
-                            onEdit = { editTagSong = it },
-                            onShowBio = { bioArtistName = it },
                             onNavigateLibrary = { mode ->
                                 libraryMode = mode
                                 selectedFilterKey = null
@@ -672,7 +502,6 @@ fun SoniqApp() {
                                 raw.split("|").filter { it.isNotBlank() }.toSet()
                             },
                             onCreateAlbum = { showCreateAlbum = true },
-                            onAutoFixAll = { triggerBatchFix() },
                             onPlay = { song, list -> playSong(song, list) },
                             onFavorite = { song ->
                                 favorites = if (song.id.toString() in favorites) favorites - song.id.toString()
@@ -681,8 +510,6 @@ fun SoniqApp() {
                             },
                             onAddToPlaylist = { addToPlaylistSong = it },
                             onAddToAlbum = { addToAlbumSong = it },
-                            onEdit = { editTagSong = it },
-                            onShowBio = { bioArtistName = it },
                             modifier = Modifier.fillMaxSize()
                         )
                         MainTab.EQUALIZER -> EqualizerScreen(Modifier.fillMaxSize())
@@ -732,7 +559,6 @@ fun SoniqApp() {
                                 songs = applySavedMetadataOverrides(loaded, prefs)
                                 Toast.makeText(context, "Rescanned ${songs.size} tracks", Toast.LENGTH_SHORT).show()
                             },
-                            onAutoFixAll = { triggerBatchFix() },
                             onScanDuplicates = {
                                 if (!isScanningDuplicates) {
                                     scope.launch {
@@ -844,23 +670,7 @@ fun SoniqApp() {
                             favorites = if (id in favorites) favorites - id else favorites + id
                             saveFavorites()
                         },
-                        onShareStoryCard = {
-                            scope.launch {
-                                ShareCardGenerator.shareStoryCard(context, currentSong!!)
-                            }
-                        },
-                        onPlaySimilarRadio = {
-                            scope.launch {
-                                Toast.makeText(context, "Fetching Smart Radio recommendations...", Toast.LENGTH_SHORT).show()
-                                val similar = SimilarTracksEngine.getSimilarTracksOnline(currentSong!!)
-                                if (similar.isNotEmpty()) {
-                                    playSong(similar.first(), similar)
-                                } else {
-                                    Toast.makeText(context, "No similar tracks found online.", Toast.LENGTH_SHORT).show()
-                                }
-                            }
-                        },
-                        onShowBio = { bioArtistName = currentSong!!.artist },
+                        onLaunchParty = { launchPartyMode() },
                         onOpenEqualizer = {
                             showPlayer = false
                             currentTab = MainTab.EQUALIZER
@@ -869,13 +679,7 @@ fun SoniqApp() {
                 }
             }
 
-            bioArtistName?.let { artist ->
-                ArtistBioBottomSheet(
-                    artistName = artist,
-                    onDismiss = { bioArtistName = null }
-                )
-            }
-
+            // Duplicate Cleaner Results Dialog
             duplicateGroups?.let { groups ->
                 AlertDialog(
                     onDismissRequest = { duplicateGroups = null },
@@ -927,15 +731,6 @@ fun SoniqApp() {
                     }
                 )
             }
-
-            AutoFixBatchDialog(
-                isRunning = isBatchFixing,
-                current = batchCurrent,
-                total = batchTotal,
-                currentTrackTitle = batchTrackName,
-                summaryMessage = batchSummary,
-                onDismissSummary = { batchSummary = null }
-            )
 
             if (showCreatePlaylist) {
                 AlertDialog(
@@ -1075,124 +870,6 @@ fun SoniqApp() {
                     dismissButton = {
                         TextButton(onClick = { addToAlbumSong = null }) { Text("Cancel", color = MutedLavender) }
                     }
-                )
-            }
-
-            editTagSong?.let { song ->
-                TagEditorAndFingerprintDialog(
-                    song = song,
-                    onDismiss = { editTagSong = null },
-                    onSave = { updatedTitle, updatedArtist, updatedAlbum, newArtUri ->
-                        val finalArt = newArtUri ?: song.albumArtUri
-                        saveMetadataOverride(prefs, song.id, updatedTitle, updatedArtist, updatedAlbum, finalArt)
-                        songs = songs.map {
-                            if (it.id == song.id) it.copy(
-                                title = updatedTitle,
-                                artist = updatedArtist,
-                                album = updatedAlbum,
-                                albumArtUri = finalArt
-                            ) else it
-                        }
-                        if (currentSong?.id == song.id) {
-                            currentSong = currentSong?.copy(
-                                title = updatedTitle,
-                                artist = updatedArtist,
-                                album = updatedAlbum,
-                                albumArtUri = finalArt
-                            )
-                        }
-                        editTagSong = null
-                    }
-                )
-            }
-        }
-    }
-}
-
-@Composable
-fun ArtistBioBottomSheet(
-    artistName: String,
-    onDismiss: () -> Unit
-) {
-    var bio by remember { mutableStateOf<ArtistBio?>(null) }
-    var isLoading by remember { mutableStateOf(true) }
-
-    LaunchedEffect(artistName) {
-        isLoading = true
-        bio = ArtistBioEngine.getArtistBio(artistName)
-        isLoading = false
-    }
-
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        containerColor = Color(0xFF160E2E),
-        dragHandle = { BottomSheetDefaults.DragHandle(color = ElectricCyan) }
-    ) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 24.dp)
-                .padding(bottom = 36.dp)
-                .verticalScroll(rememberScrollState()),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            if (isLoading) {
-                CircularProgressIndicator(color = ElectricCyan, modifier = Modifier.padding(32.dp))
-            } else if (bio != null) {
-                if (bio!!.photoUrl != null) {
-                    AsyncImage(
-                        model = bio!!.photoUrl,
-                        contentDescription = "Artist Photo",
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier
-                            .size(110.dp)
-                            .clip(CircleShape)
-                            .border(2.dp, ElectricCyan, CircleShape)
-                    )
-                    Spacer(Modifier.height(12.dp))
-                }
-
-                Text(
-                    bio!!.artistName,
-                    color = Color.White,
-                    fontWeight = FontWeight.Black,
-                    fontSize = 20.sp,
-                    textAlign = TextAlign.Center
-                )
-
-                if (bio!!.description != null) {
-                    Text(
-                        bio!!.description!!,
-                        color = ElectricCyan,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        textAlign = TextAlign.Center
-                    )
-                }
-
-                Spacer(Modifier.height(14.dp))
-
-                Text(
-                    bio!!.extract,
-                    color = Color(0xFFE2D9F3),
-                    fontSize = 14.sp,
-                    lineHeight = 21.sp,
-                    textAlign = TextAlign.Start
-                )
-
-                Spacer(Modifier.height(12.dp))
-
-                Text(
-                    "Source: Wikipedia Public Knowledge Graph",
-                    color = MutedLavender.copy(alpha = 0.5f),
-                    fontSize = 10.sp
-                )
-            } else {
-                Text(
-                    "No encyclopedia biography found for '$artistName'.",
-                    color = MutedLavender,
-                    fontSize = 14.sp,
-                    modifier = Modifier.padding(32.dp)
                 )
             }
         }
@@ -1520,9 +1197,7 @@ private fun FullPlayer(
     onShuffle: () -> Unit,
     onRepeat: () -> Unit,
     onToggleFavorite: () -> Unit,
-    onShareStoryCard: () -> Unit,
-    onPlaySimilarRadio: () -> Unit,
-    onShowBio: () -> Unit,
+    onLaunchParty: () -> Unit,
     onOpenEqualizer: () -> Unit
 ) {
     val context = LocalContext.current
@@ -1593,7 +1268,7 @@ private fun FullPlayer(
             )
             Spacer(Modifier.height(6.dp))
 
-            // Single-line balanced header
+            // Single-line header
             Row(
                 Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -1614,27 +1289,21 @@ private fun FullPlayer(
                     )
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    BouncyIconButton(onClick = onShareStoryCard, size = 36.dp) {
-                        Icon(Icons.Default.Share, "Share", tint = secondaryAccent, modifier = Modifier.size(19.dp))
-                    }
-                    BouncyIconButton(onClick = onPlaySimilarRadio, size = 36.dp) {
-                        Icon(Icons.Default.AutoAwesome, "Radio", tint = primaryAccent, modifier = Modifier.size(19.dp))
-                    }
-                    BouncyIconButton(onClick = onShowBio, size = 36.dp) {
-                        Icon(Icons.Default.Info, "Bio", tint = secondaryAccent, modifier = Modifier.size(19.dp))
+                    BouncyIconButton(onClick = onLaunchParty, size = 36.dp) {
+                        Icon(Icons.Default.Headphones, "Party", tint = secondaryAccent, modifier = Modifier.size(20.dp))
                     }
                     BouncyIconButton(onClick = { showLyrics = !showLyrics }, size = 36.dp) {
-                        Icon(Icons.Default.Lyrics, "Lyrics", tint = if (showLyrics) secondaryAccent else MutedLavender, modifier = Modifier.size(19.dp))
+                        Icon(Icons.Default.Lyrics, "Lyrics", tint = if (showLyrics) secondaryAccent else MutedLavender, modifier = Modifier.size(20.dp))
                     }
                     BouncyIconButton(onClick = onOpenEqualizer, size = 36.dp) {
-                        Icon(Icons.Default.Equalizer, "EQ", tint = secondaryAccent, modifier = Modifier.size(19.dp))
+                        Icon(Icons.Default.Equalizer, "EQ", tint = secondaryAccent, modifier = Modifier.size(20.dp))
                     }
                 }
             }
 
             Spacer(Modifier.height(6.dp))
 
-            // Single-line Speed & Reverb Mode Chips
+            // Speed & Reverb Chips
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1681,7 +1350,6 @@ private fun FullPlayer(
                         .padding(top = 8.dp)
                 ) {
                     Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                        // Speed / Tempo Control Row with - / + step buttons
                         Row(
                             Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
@@ -1720,7 +1388,6 @@ private fun FullPlayer(
 
                         Spacer(Modifier.height(4.dp))
 
-                        // Reverb Level Control Row with - / + step buttons
                         Row(
                             Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
@@ -1774,16 +1441,12 @@ private fun FullPlayer(
                 ) {
                     if (isLoadingLyrics) {
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                CircularProgressIndicator(color = secondaryAccent)
-                                Spacer(Modifier.height(8.dp))
-                                Text("Searching online lyrics database...", color = MutedLavender, fontSize = 12.sp)
-                            }
+                            CircularProgressIndicator(color = secondaryAccent)
                         }
                     } else if (lyrics.isEmpty()) {
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Text(
-                                "No lyrics found for '${song.title}'.\nTry running Auto-Fix on this song first so its title is clean.",
+                                "No local .lrc lyrics found for '${song.title}'.\nPlace a matching .lrc file in the song folder.",
                                 color = MutedLavender,
                                 fontSize = 13.sp,
                                 textAlign = TextAlign.Center
@@ -2135,8 +1798,6 @@ private fun HomeScreen(
     onFavorite: (Song) -> Unit,
     onAddToPlaylist: (Song) -> Unit,
     onAddToAlbum: (Song) -> Unit,
-    onEdit: (Song) -> Unit,
-    onShowBio: (String) -> Unit,
     onNavigateLibrary: (String) -> Unit
 ) {
     val songMap = remember(songs) { songs.associateBy { it.id.toString() } }
@@ -2188,8 +1849,6 @@ private fun HomeScreen(
                 }
             }
         }
-        Spacer(Modifier.height(14.dp))
-        SonicHeatmapView(showClearButton = true)
         Spacer(Modifier.height(16.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("RECENTLY PLAYED", color = ElectricCyan, fontWeight = FontWeight.Bold, fontSize = 13.sp)
@@ -2209,9 +1868,7 @@ private fun HomeScreen(
                     onPlay = { onPlay(song, recentSongs) },
                     onFavorite = { onFavorite(song) },
                     onAddToPlaylist = { onAddToPlaylist(song) },
-                    onAddToAlbum = { onAddToAlbum(song) },
-                    onEdit = { onEdit(song) },
-                    onShowBio = { onShowBio(song.artist) }
+                    onAddToAlbum = { onAddToAlbum(song) }
                 )
                 Spacer(Modifier.height(6.dp))
             }
@@ -2230,9 +1887,7 @@ private fun HomeScreen(
                 onPlay = { onPlay(song, lastAddedSongs) },
                 onFavorite = { onFavorite(song) },
                 onAddToPlaylist = { onAddToPlaylist(song) },
-                onAddToAlbum = { onAddToAlbum(song) },
-                onEdit = { onEdit(song) },
-                onShowBio = { onShowBio(song.artist) }
+                onAddToAlbum = { onAddToAlbum(song) }
             )
             Spacer(Modifier.height(6.dp))
         }
@@ -2247,9 +1902,7 @@ private fun HomeScreen(
                     onPlay = { onPlay(song, favSongs) },
                     onFavorite = { onFavorite(song) },
                     onAddToPlaylist = { onAddToPlaylist(song) },
-                    onAddToAlbum = { onAddToAlbum(song) },
-                    onEdit = { onEdit(song) },
-                    onShowBio = { onShowBio(song.artist) }
+                    onAddToAlbum = { onAddToAlbum(song) }
                 )
                 Spacer(Modifier.height(6.dp))
             }
@@ -2273,13 +1926,10 @@ private fun LibraryScreen(
     customAlbums: List<String>,
     getCustomAlbumSongs: (String) -> Set<String>,
     onCreateAlbum: () -> Unit,
-    onAutoFixAll: () -> Unit,
     onPlay: (Song, List<Song>) -> Unit,
     onFavorite: (Song) -> Unit,
     onAddToPlaylist: (Song) -> Unit,
     onAddToAlbum: (Song) -> Unit,
-    onEdit: (Song) -> Unit,
-    onShowBio: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val artistGroups = remember(allSongs) {
@@ -2296,9 +1946,6 @@ private fun LibraryScreen(
     }
     val folderGroups = remember(allSongs) {
         allSongs.groupBy { it.folder }.toList().sortedBy { it.first.lowercase() }
-    }
-    val unknownCount = remember(allSongs) {
-        allSongs.count { AudioFingerprintFixer.isSongUnknown(it) }
     }
     val songsToDisplay = remember(allSongs, mode, filterKey, query, favorites, recents, playlistSongs, customAlbums) {
         val songMap = allSongs.associateBy { it.id.toString() }
@@ -2357,13 +2004,6 @@ private fun LibraryScreen(
                 Text(filterKey, color = ElectricCyan, fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                 Spacer(Modifier.width(6.dp))
                 Text("(${songsToDisplay.size})", color = MutedLavender, fontSize = 12.sp)
-                if (mode == "Artists") {
-                    TextButton(onClick = { onShowBio(filterKey) }) {
-                        Icon(Icons.Default.Info, null, tint = ElectricCyan, modifier = Modifier.size(15.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Bio", color = ElectricCyan, fontSize = 12.sp)
-                    }
-                }
             }
         } else {
             Row(
@@ -2382,17 +2022,6 @@ private fun LibraryScreen(
                     fontSize = 11.sp,
                     modifier = Modifier.weight(1f)
                 )
-
-                if (unknownCount > 0) {
-                    TextButton(
-                        onClick = onAutoFixAll,
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                    ) {
-                        Icon(Icons.Default.AutoFixHigh, null, tint = ElectricCyan, modifier = Modifier.size(15.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Auto-Fix ($unknownCount)", color = ElectricCyan, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                    }
-                }
 
                 if (mode == "Albums") {
                     TextButton(onClick = onCreateAlbum, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)) {
@@ -2485,9 +2114,7 @@ private fun LibraryScreen(
                                     onPlay = { onPlay(song, songsToDisplay) },
                                     onFavorite = { onFavorite(song) },
                                     onAddToPlaylist = { onAddToPlaylist(song) },
-                                    onAddToAlbum = { onAddToAlbum(song) },
-                                    onEdit = { onEdit(song) },
-                                    onShowBio = { onShowBio(song.artist) }
+                                    onAddToAlbum = { onAddToAlbum(song) }
                                 )
                             }
                         }
@@ -2726,9 +2353,7 @@ private fun SongCard(
     onPlay: () -> Unit,
     onFavorite: () -> Unit,
     onAddToPlaylist: () -> Unit,
-    onAddToAlbum: () -> Unit,
-    onEdit: () -> Unit,
-    onShowBio: () -> Unit
+    onAddToAlbum: () -> Unit
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
     BouncyButton(onClick = onPlay, modifier = Modifier.fillMaxWidth()) {
@@ -2754,9 +2379,6 @@ private fun SongCard(
                         modifier = Modifier.size(19.dp)
                     )
                 }
-                IconButton(onClick = onEdit, modifier = Modifier.size(34.dp)) {
-                    Icon(Icons.Default.AutoFixHigh, "Auto-Fix Metadata", tint = ElectricCyan, modifier = Modifier.size(19.dp))
-                }
                 Box {
                     IconButton(onClick = { menuExpanded = true }, modifier = Modifier.size(32.dp)) {
                         Icon(Icons.Default.MoreVert, contentDescription = "More", tint = MutedLavender, modifier = Modifier.size(19.dp))
@@ -2766,14 +2388,6 @@ private fun SongCard(
                         onDismissRequest = { menuExpanded = false },
                         modifier = Modifier.background(Color(0xFF1E1436))
                     ) {
-                        DropdownMenuItem(
-                            text = { Text("Artist Biography", color = Color.White) },
-                            leadingIcon = { Icon(Icons.Default.Info, null, tint = ElectricCyan) },
-                            onClick = {
-                                menuExpanded = false
-                                onShowBio()
-                            }
-                        )
                         DropdownMenuItem(
                             text = { Text("Add to Playlist", color = Color.White) },
                             leadingIcon = { Icon(Icons.Default.PlaylistAdd, null, tint = ElectricCyan) },
@@ -2788,14 +2402,6 @@ private fun SongCard(
                             onClick = {
                                 menuExpanded = false
                                 onAddToAlbum()
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Fingerprint Auto-Fixer", color = Color.White) },
-                            leadingIcon = { Icon(Icons.Default.AutoFixHigh, null, tint = ElectricCyan) },
-                            onClick = {
-                                menuExpanded = false
-                                onEdit()
                             }
                         )
                     }
@@ -2866,90 +2472,6 @@ private fun SongThumb(song: Song, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun TagEditorAndFingerprintDialog(
-    song: Song,
-    onDismiss: () -> Unit,
-    onSave: (String, String, String, String?) -> Unit
-) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var title by remember { mutableStateOf(song.title) }
-    var artist by remember { mutableStateOf(song.artist) }
-    var album by remember { mutableStateOf(song.album) }
-    var onlineCoverUri by remember { mutableStateOf<String?>(null) }
-    var isFingerprinting by remember { mutableStateOf(false) }
-    var matchConfidence by remember { mutableFloatStateOf(0f) }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = Color(0xFF1E1436),
-        title = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.AutoFixHigh, null, tint = ElectricCyan)
-                Spacer(Modifier.width(8.dp))
-                Text("Fingerprint & Metadata Fixer", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-            }
-        },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                OutlinedTextField(
-                    value = title,
-                    onValueChange = { title = it },
-                    label = { Text("Track Title", color = MutedLavender) },
-                    colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White)
-                )
-                OutlinedTextField(
-                    value = artist,
-                    onValueChange = { artist = it },
-                    label = { Text("Artist", color = MutedLavender) },
-                    colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White)
-                )
-                OutlinedTextField(
-                    value = album,
-                    onValueChange = { album = it },
-                    label = { Text("Album", color = MutedLavender) },
-                    colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White)
-                )
-                Button(
-                    onClick = {
-                        scope.launch {
-                            isFingerprinting = true
-                            val fix = AudioFingerprintFixer.autoFixSong(context, song)
-                            title = fix.title
-                            artist = fix.artist
-                            album = fix.album
-                            matchConfidence = fix.matchConfidence
-                            if (fix.albumArtUrl != null) {
-                                onlineCoverUri = ArtworkScraper.saveDownloadedCoverToFile(context, song, fix.albumArtUrl) ?: fix.albumArtUrl
-                            }
-                            isFingerprinting = false
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = DeepViolet),
-                    enabled = !isFingerprinting,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Icon(Icons.Default.GraphicEq, null)
-                    Spacer(Modifier.width(6.dp))
-                    Text(if (isFingerprinting) "Analyzing Acoustic Match..." else "Magic Audio Fingerprint Fix")
-                }
-                if (matchConfidence > 0f) {
-                    Text("• Confidence Match: ${(matchConfidence * 100).toInt()}% • Persisted", color = ElectricCyan, fontSize = 12.sp)
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = { onSave(title.trim(), artist.trim(), album.trim(), onlineCoverUri) }) {
-                Text("Apply & Save", color = ElectricCyan, fontWeight = FontWeight.Bold)
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel", color = MutedLavender) }
-        }
-    )
-}
-
-@Composable
 private fun MiniVisualizer(
     accent1: Color = ElectricCyan,
     accent2: Color = NeonPurple,
@@ -2976,7 +2498,6 @@ private fun SettingsScreen(
     onSetTimer: (Int) -> Unit,
     onCancelTimer: () -> Unit,
     onRescan: () -> Unit,
-    onAutoFixAll: () -> Unit,
     onScanDuplicates: () -> Unit,
     onLaunchDualAudio: () -> Unit,
     modifier: Modifier = Modifier
@@ -3082,7 +2603,7 @@ private fun SettingsScreen(
             }
         }
         Spacer(Modifier.height(16.dp))
-        Text("LIBRARY METADATA & STORAGE SUITE", color = ElectricCyan, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+        Text("LIBRARY & STORAGE SUITE", color = ElectricCyan, fontWeight = FontWeight.Bold, fontSize = 13.sp)
         Spacer(Modifier.height(6.dp))
         Text("$songCount tracks indexed from local storage.", color = MutedLavender, fontSize = 12.sp)
         Spacer(Modifier.height(10.dp))
@@ -3097,32 +2618,23 @@ private fun SettingsScreen(
                 Text("Rescan", color = ElectricCyan, fontSize = 12.sp, maxLines = 1)
             }
             Button(
-                onClick = onAutoFixAll,
-                colors = ButtonDefaults.buttonColors(containerColor = DeepViolet),
+                onClick = onScanDuplicates,
+                enabled = !isScanningDuplicates,
+                colors = ButtonDefaults.buttonColors(containerColor = GlassPill),
                 modifier = Modifier.weight(1f)
             ) {
-                Icon(Icons.Default.AutoFixHigh, null, tint = ElectricCyan, modifier = Modifier.size(16.dp))
+                Icon(Icons.Default.CleaningServices, null, tint = ElectricCyan, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(6.dp))
-                Text("Auto-Fix All", color = Color.White, fontSize = 12.sp, maxLines = 1)
+                Text(
+                    if (isScanningDuplicates) "Scanning..." else "Duplicates",
+                    color = ElectricCyan,
+                    fontSize = 12.sp,
+                    maxLines = 1
+                )
             }
         }
-        Spacer(Modifier.height(8.dp))
-        Button(
-            onClick = onScanDuplicates,
-            enabled = !isScanningDuplicates,
-            colors = ButtonDefaults.buttonColors(containerColor = GlassPill),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Icon(Icons.Default.CleaningServices, null, tint = ElectricCyan, modifier = Modifier.size(16.dp))
-            Spacer(Modifier.width(6.dp))
-            Text(
-                if (isScanningDuplicates) "Scanning Bitrates & Duplicates..." else "Scan Duplicates & Low Bitrate Files",
-                color = ElectricCyan,
-                fontSize = 12.sp
-            )
-        }
         Spacer(Modifier.height(20.dp))
-        Text("SONIQ v0.8.0 • Android 14+ Production Release", color = MutedLavender.copy(alpha = 0.5f), fontSize = 11.sp)
+        Text("SONIQ v0.8.0 • Local Edition", color = MutedLavender.copy(alpha = 0.5f), fontSize = 11.sp)
     }
 }
 

@@ -22,7 +22,6 @@ import androidx.media3.session.MediaSessionService
 import com.soniq.player.audio.AudioEffectsBridge
 import com.soniq.player.audio.RealtimeFftMonitor
 import com.soniq.player.audio.SoftwareDspEngine
-import com.soniq.player.data.SonicStatsEngine
 
 class PlaybackService : MediaSessionService() {
     private var session: MediaSession? = null
@@ -49,7 +48,6 @@ class PlaybackService : MediaSessionService() {
 
     override fun onCreate() {
         super.onCreate()
-        SonicStatsEngine.init(applicationContext)
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
         val player = ExoPlayer.Builder(this)
@@ -130,7 +128,6 @@ class PlaybackService : MediaSessionService() {
             addAction("android.media.RINGER_MODE_CHANGED")
             addAction("android.intent.action.PHONE_STATE")
         }
-        // Fix for Android 14+ SecurityException on dynamic BroadcastReceiver registration
         runCatching {
             ContextCompat.registerReceiver(
                 this,
