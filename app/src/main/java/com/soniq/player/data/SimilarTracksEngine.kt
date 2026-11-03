@@ -28,6 +28,7 @@ object SimilarTracksEngine {
             val results = root.optJSONArray("results") ?: return@withContext emptyList()
 
             val list = mutableListOf<Song>()
+            val baseTime = System.currentTimeMillis()
             for (i in 0 until results.length()) {
                 val item = results.getJSONObject(i)
                 val trackName = item.optString("trackName", "")
@@ -37,11 +38,10 @@ object SimilarTracksEngine {
                 val album = item.optString("collectionName", "Single")
                 val art = item.optString("artworkUrl100", "").replace("100x100bb", "600x600bb")
 
-                // Skip if it's the exact same song
                 if (trackName.isNotBlank() && preview.isNotBlank() && !trackName.equals(song.title, true)) {
                     list.add(
                         Song(
-                            id = -(System.currentTimeMillis() + i),
+                            id = baseTime + i + 1000L,
                             title = trackName,
                             artist = artist,
                             album = album,
@@ -49,7 +49,7 @@ object SimilarTracksEngine {
                             uri = preview,
                             albumArtUri = art.ifBlank { null },
                             folder = "Smart Radio",
-                            dateAdded = System.currentTimeMillis()
+                            dateAdded = baseTime
                         )
                     )
                 }

@@ -151,15 +151,12 @@ fun SoniqApp() {
     var recents by remember { mutableStateOf<List<String>>(prefs.getString("recents_ordered", "")?.split("|")?.filter { it.isNotBlank() } ?: emptyList()) }
     var searchHistory by remember { mutableStateOf<List<String>>(prefs.getString("search_history_ordered", "")?.split("|")?.filter { it.isNotBlank() }?.take(6) ?: emptyList()) }
 
-    // Online Stream Results
     var onlineResults by remember { mutableStateOf<List<OnlineTrack>>(emptyList()) }
     var isSearchingOnline by remember { mutableStateOf(false) }
 
-    // Duplicate Cleaner Dialog State
     var duplicateGroups by remember { mutableStateOf<List<DuplicateGroup>?>(null) }
     var isScanningDuplicates by remember { mutableStateOf(false) }
 
-    // Batch Auto-Fix
     var isBatchFixing by remember { mutableStateOf(false) }
     var batchCurrent by remember { mutableIntStateOf(0) }
     var batchTotal by remember { mutableIntStateOf(0) }
@@ -190,7 +187,6 @@ fun SoniqApp() {
     var playerOffsetY by remember { mutableFloatStateOf(0f) }
     val gyroEngine = remember { GyroscopeParallaxEngine(context) }
 
-    // Pitch & Speed State (1.0 = Normal, 1.25 = Nightcore, 0.85 = Slowed)
     var currentSpeedMode by remember { mutableStateOf("Normal") }
 
     DisposableEffect(Unit) {
@@ -250,8 +246,10 @@ fun SoniqApp() {
             }
             "Slowed" -> {
                 c.playbackParameters = PlaybackParameters(0.85f, 0.85f)
-                if (AudioEffectsBridge.virtualizerSupported()) {
-                    AudioEffectsBridge.setVirtualizerStrength(700)
+                runCatching {
+                    if (AudioEffectsBridge.isAvailable() && AudioEffectsBridge.virtualizerSupported()) {
+                        AudioEffectsBridge.setVirtualizerStrength(700)
+                    }
                 }
             }
             else -> {
@@ -378,7 +376,6 @@ fun SoniqApp() {
                     }
                     override fun onPlaybackStateChanged(state: Int) {
                         duration = c.duration.coerceAtLeast(0L)
-                        // Smart Song Radio auto-queue when reaching the end of the queue
                         if (state == Player.STATE_ENDED && currentSong != null) {
                             scope.launch {
                                 val similar = SimilarTracksEngine.getSimilarTracksOnline(currentSong!!)
@@ -522,7 +519,6 @@ fun SoniqApp() {
                             )
                         )
 
-                        // Online Search Trigger Action
                         if (query.trim().length >= 2 && currentTab == MainTab.LIBRARY) {
                             Row(
                                 modifier = Modifier
@@ -571,7 +567,6 @@ fun SoniqApp() {
                     }
                 }
 
-                // Online Stream Results List
                 if (onlineResults.isNotEmpty() && currentTab == MainTab.LIBRARY) {
                     Column(Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
                         Text("ONLINE STREAMS (KEYLESS)", color = ElectricCyan, fontWeight = FontWeight.Bold, fontSize = 11.sp)
@@ -584,7 +579,7 @@ fun SoniqApp() {
                                     border = BorderStroke(1.dp, GlassBorder),
                                     modifier = Modifier.width(180.dp).clickable {
                                         val onlineSong = Song(
-                                            id = -System.currentTimeMillis(),
+                                            id = System.currentTimeMillis() + 5000L,
                                             title = ot.title,
                                             artist = ot.artist,
                                             album = "Online Stream",
@@ -761,7 +756,6 @@ fun SoniqApp() {
                 )
             }
 
-            // Full Player Screen
             if (showPlayer && currentSong != null) {
                 val animatedOffsetY by animateFloatAsState(
                     targetValue = playerOffsetY,
@@ -851,7 +845,6 @@ fun SoniqApp() {
                 )
             }
 
-            // Duplicate Cleaner Results Dialog
             duplicateGroups?.let { groups ->
                 AlertDialog(
                     onDismissRequest = { duplicateGroups = null },
@@ -1587,7 +1580,7 @@ private fun FullPlayer(
 
             Spacer(Modifier.height(6.dp))
 
-            // Speed & Pitch Mode Pill Chips (Nightcore / Slowed + Reverb)
+            // Speed & Pitch Chips
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.Center
