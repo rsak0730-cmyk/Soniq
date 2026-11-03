@@ -86,6 +86,7 @@ private val GlassBorder = Color(0x5553F6FF)
 enum class MainTab(val label: String, val icon: ImageVector) {
     HOME("Home", Icons.Default.Home),
     LIBRARY("Library", Icons.Default.LibraryMusic),
+    RADIO("Radio", Icons.Default.Radio),
     EQUALIZER("Equalizer", Icons.Default.Equalizer),
     PLAYLISTS("Playlists", Icons.Default.QueueMusic),
     SETTINGS("Settings", Icons.Default.Settings)
@@ -154,6 +155,9 @@ fun SoniqApp() {
     var batchTrackName by remember { mutableStateOf("") }
     var batchSummary by remember { mutableStateOf<String?>(null) }
 
+    var activeRadioUrl by remember { mutableStateOf<String?>(null) }
+    var bioArtistName by remember { mutableStateOf<String?>(null) }
+
     var playlists by remember { mutableStateOf<List<String>>(prefs.getStringSet("playlists", setOf("Favorites", "Workout", "Late Night"))?.toList()?.sorted() ?: listOf("Favorites")) }
     var selectedPlaylist by remember { mutableStateOf("Favorites") }
     var playlistSongs by remember { mutableStateOf<Set<String>>(prefs.getString("playlist_Favorites", "")?.split("|")?.filter { it.isNotBlank() }?.toSet() ?: emptySet()) }
@@ -182,8 +186,9 @@ fun SoniqApp() {
         onDispose { gyroEngine.stop() }
     }
 
-    BackHandler(enabled = showPlayer || selectedFilterKey != null || currentTab != MainTab.HOME) {
+    BackHandler(enabled = showPlayer || bioArtistName != null || selectedFilterKey != null || currentTab != MainTab.HOME) {
         when {
+            bioArtistName != null -> bioArtistName = null
             showPlayer -> showPlayer = false
             selectedFilterKey != null -> selectedFilterKey = null
             currentTab != MainTab.HOME -> currentTab = MainTab.HOME
@@ -192,6 +197,38 @@ fun SoniqApp() {
 
     fun saveFavorites() { prefs.edit().putStringSet("favorites", favorites).apply() }
     fun saveRecents(updated: List<String>) { prefs.edit().putString("recents_ordered", updated.joinToString("|")).apply() }
+
+    fun playRadioStation(station: RadioStation) {
+        val c = controller ?: return
+        activeRadioUrl = station.streamUrl
+        val mediaItem = MediaItem.Builder()
+            .setMediaId(station.stationuuid)
+            .setUri(station.streamUrl)
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(station.name)
+                    .setArtist(station.tags.ifBlank { "Live Radio" })
+                    .setAlbumTitle(station.country)
+                    .setArtworkUri(station.favicon?.let(Uri::parse))
+                    .build()
+            ).build()
+        c.setMediaItem(mediaItem)
+        c.prepare()
+        c.play()
+        currentSong = Song(
+            id = -System.currentTimeMillis(),
+            title = station.name,
+            artist = "Live Radio (${station.country})",
+            album = station.tags,
+            durationMs = 0L,
+            uri = station.streamUrl,
+            albumArtUri = station.favicon,
+            folder = "Radio",
+            dateAdded = System.currentTimeMillis()
+        )
+        isPlaying = true
+        showPlayer = true
+    }
 
     fun triggerBatchFix() {
         if (isBatchFixing) return
@@ -251,6 +288,7 @@ fun SoniqApp() {
 
     fun playSong(song: Song, source: List<Song> = songs, openFullPlayer: Boolean = true) {
         val c = controller ?: return
+        activeRadioUrl = null
         val queue = source.ifEmpty { songs }.ifEmpty { listOf(song) }
         val index = queue.indexOfFirst { it.id == song.id }.coerceAtLeast(0)
         c.setMediaItems(queue.map { s ->
@@ -395,7 +433,6 @@ fun SoniqApp() {
                     .padding(bottom = bottomPadding)
                     .padding(horizontal = 16.dp)
             ) {
-                // Top Brand Header
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -410,7 +447,7 @@ fun SoniqApp() {
                             fontWeight = FontWeight.Black,
                             letterSpacing = 1.4.sp
                         )
-                        Text("Liquid Gyro Acoustics • Party Sync", color = MutedLavender, fontSize = 11.sp)
+                        Text("Liquid Gyro Acoustics • Radio Sync", color = MutedLavender, fontSize = 11.sp)
                     }
                     Surface(
                         color = GlassPill,
@@ -429,7 +466,6 @@ fun SoniqApp() {
                     }
                 }
 
-                // Contextual Search Bar
                 AnimatedVisibility(visible = currentTab == MainTab.HOME || currentTab == MainTab.LIBRARY) {
                     Column {
                         OutlinedTextField(
@@ -514,6 +550,7 @@ fun SoniqApp() {
                             onAddToPlaylist = { addToPlaylistSong = it },
                             onAddToAlbum = { addToAlbumSong = it },
                             onEdit = { editTagSong = it },
+                            onShowBio = { bioArtistName = it },
                             onNavigateLibrary = { mode ->
                                 libraryMode = mode
                                 selectedFilterKey = null
@@ -551,6 +588,12 @@ fun SoniqApp() {
                             onAddToPlaylist = { addToPlaylistSong = it },
                             onAddToAlbum = { addToAlbumSong = it },
                             onEdit = { editTagSong = it },
+                            onShowBio = { bioArtistName = it },
+                            modifier = Modifier.fillMaxSize()
+                        )
+                        MainTab.RADIO -> RadioScreen(
+                            currentStreamUrl = activeRadioUrl,
+                            onPlayStation = { playRadioStation(it) },
                             modifier = Modifier.fillMaxSize()
                         )
                         MainTab.EQUALIZER -> EqualizerScreen(Modifier.fillMaxSize())
@@ -606,7 +649,6 @@ fun SoniqApp() {
                 }
             }
 
-            // Mini-Player & Bottom Nav Bar
             Column(
                 Modifier
                     .align(Alignment.BottomCenter)
@@ -633,7 +675,6 @@ fun SoniqApp() {
                 )
             }
 
-            // Full Screen Player
             if (showPlayer && currentSong != null) {
                 val animatedOffsetY by animateFloatAsState(
                     targetValue = playerOffsetY,
@@ -689,6 +730,7 @@ fun SoniqApp() {
                             saveFavorites()
                         },
                         onLaunchParty = { launchPartyMode() },
+                        onShowBio = { bioArtistName = currentSong!!.artist },
                         onOpenEqualizer = {
                             showPlayer = false
                             currentTab = MainTab.EQUALIZER
@@ -697,7 +739,14 @@ fun SoniqApp() {
                 }
             }
 
-            // Batch Fix Dialog
+            // Artist Bio Modal Bottom Sheet
+            bioArtistName?.let { artist ->
+                ArtistBioBottomSheet(
+                    artistName = artist,
+                    onDismiss = { bioArtistName = null }
+                )
+            }
+
             AutoFixBatchDialog(
                 isRunning = isBatchFixing,
                 current = batchCurrent,
@@ -707,7 +756,6 @@ fun SoniqApp() {
                 onDismissSummary = { batchSummary = null }
             )
 
-            // Create Playlist Dialog
             if (showCreatePlaylist) {
                 AlertDialog(
                     onDismissRequest = { showCreatePlaylist = false },
@@ -744,7 +792,6 @@ fun SoniqApp() {
                 )
             }
 
-            // Add Song to Playlist Dialog
             addToPlaylistSong?.let { song ->
                 AlertDialog(
                     onDismissRequest = { addToPlaylistSong = null },
@@ -780,7 +827,6 @@ fun SoniqApp() {
                 )
             }
 
-            // Create Album Dialog
             if (showCreateAlbum) {
                 AlertDialog(
                     onDismissRequest = { showCreateAlbum = false },
@@ -817,7 +863,6 @@ fun SoniqApp() {
                 )
             }
 
-            // Add Song to Album Dialog
             addToAlbumSong?.let { song ->
                 AlertDialog(
                     onDismissRequest = { addToAlbumSong = null },
@@ -852,7 +897,6 @@ fun SoniqApp() {
                 )
             }
 
-            // Single Song Fingerprint Editor Dialog
             editTagSong?.let { song ->
                 TagEditorAndFingerprintDialog(
                     song = song,
@@ -878,6 +922,96 @@ fun SoniqApp() {
                         }
                         editTagSong = null
                     }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun ArtistBioBottomSheet(
+    artistName: String,
+    onDismiss: () -> Unit
+) {
+    var bio by remember { mutableStateOf<ArtistBio?>(null) }
+    var isLoading by remember { mutableStateOf(true) }
+
+    LaunchedEffect(artistName) {
+        isLoading = true
+        bio = ArtistBioEngine.getArtistBio(artistName)
+        isLoading = false
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = Color(0xFF160E2E),
+        dragHandle = { BottomSheetDefaults.DragHandle(color = ElectricCyan) }
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp)
+                .padding(bottom = 36.dp)
+                .verticalScroll(rememberScrollState()),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            if (isLoading) {
+                CircularProgressIndicator(color = ElectricCyan, modifier = Modifier.padding(32.dp))
+            } else if (bio != null) {
+                if (bio!!.photoUrl != null) {
+                    AsyncImage(
+                        model = bio!!.photoUrl,
+                        contentDescription = "Artist Photo",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .size(110.dp)
+                            .clip(CircleShape)
+                            .border(2.dp, ElectricCyan, CircleShape)
+                    )
+                    Spacer(Modifier.height(12.dp))
+                }
+
+                Text(
+                    bio!!.artistName,
+                    color = Color.White,
+                    fontWeight = FontWeight.Black,
+                    fontSize = 20.sp,
+                    textAlign = TextAlign.Center
+                )
+
+                if (bio!!.description != null) {
+                    Text(
+                        bio!!.description!!,
+                        color = ElectricCyan,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        textAlign = TextAlign.Center
+                    )
+                }
+
+                Spacer(Modifier.height(14.dp))
+
+                Text(
+                    bio!!.extract,
+                    color = Color(0xFFE2D9F3),
+                    fontSize = 14.sp,
+                    lineHeight = 21.sp,
+                    textAlign = TextAlign.Start
+                )
+
+                Spacer(Modifier.height(12.dp))
+
+                Text(
+                    "Source: Wikipedia Public Knowledge Graph",
+                    color = MutedLavender.copy(alpha = 0.5f),
+                    fontSize = 10.sp
+                )
+            } else {
+                Text(
+                    "No encyclopedia biography found for '$artistName'.",
+                    color = MutedLavender,
+                    fontSize = 14.sp,
+                    modifier = Modifier.padding(32.dp)
                 )
             }
         }
@@ -1043,7 +1177,6 @@ fun LiquidWaterWaveBackground(
     }
 }
 
-// FIX: Strictly constrained to a square aspect ratio so it stays a perfect circle
 @Composable
 private fun LiquidOrbWaveformCenterpiece(
     song: Song,
@@ -1063,7 +1196,7 @@ private fun LiquidOrbWaveformCenterpiece(
     )
     Box(
         modifier = modifier
-            .aspectRatio(1f) // Fix: Always forces width == height for a 100% true circle
+            .aspectRatio(1f)
             .graphicsLayer {
                 rotationX = gyroPitch * 14f
                 rotationY = gyroRoll * 14f
@@ -1115,11 +1248,11 @@ private fun LiquidOrbWaveformCenterpiece(
             drawContext.canvas.restore()
         }
         SongThumb(
-            song = song, 
+            song = song,
             modifier = Modifier
                 .fillMaxSize(0.96f)
                 .aspectRatio(1f)
-                .clip(CircleShape) // Fix: Always clips to perfect circle bounds
+                .clip(CircleShape)
         )
     }
 }
@@ -1201,16 +1334,20 @@ private fun FullPlayer(
     onRepeat: () -> Unit,
     onToggleFavorite: () -> Unit,
     onLaunchParty: () -> Unit,
+    onShowBio: () -> Unit,
     onOpenEqualizer: () -> Unit
 ) {
     val context = LocalContext.current
     val view = LocalView.current
     var showLyrics by remember { mutableStateOf(false) }
     var lyrics by remember { mutableStateOf<List<LyricLine>>(emptyList()) }
+    var isLoadingLyrics by remember { mutableStateOf(false) }
     val lyricsListState = rememberLazyListState()
 
     LaunchedEffect(song.id) {
+        isLoadingLyrics = true
         lyrics = LyricsEngine.loadLyricsForSong(context, song)
+        isLoadingLyrics = false
     }
 
     val currentLyricIndex = remember(position, lyrics) {
@@ -1270,6 +1407,9 @@ private fun FullPlayer(
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 BouncyIconButton(onClick = onClose) { Icon(Icons.Default.KeyboardArrowDown, null, tint = Color.White) }
                 Text("NOW PLAYING", color = MutedLavender, modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold, fontSize = 13.sp, letterSpacing = 1.sp)
+                BouncyIconButton(onClick = onShowBio) {
+                    Icon(Icons.Default.Info, contentDescription = "Artist Bio", tint = secondaryAccent)
+                }
                 BouncyIconButton(onClick = onLaunchParty) {
                     Icon(Icons.Default.Headphones, contentDescription = "Dual Headphone Share", tint = secondaryAccent)
                 }
@@ -1291,9 +1431,13 @@ private fun FullPlayer(
                         .border(1.5.dp, GlassBorder, RoundedCornerShape(26.dp))
                         .padding(18.dp)
                 ) {
-                    if (lyrics.isEmpty()) {
+                    if (isLoadingLyrics) {
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text("No local .lrc lyrics file found for this track.", color = MutedLavender, fontSize = 14.sp)
+                            CircularProgressIndicator(color = secondaryAccent)
+                        }
+                    } else if (lyrics.isEmpty()) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("No synchronized lyrics found online for this track.", color = MutedLavender, fontSize = 14.sp)
                         }
                     } else {
                         LazyColumn(state = lyricsListState, modifier = Modifier.fillMaxSize()) {
@@ -1326,10 +1470,9 @@ private fun FullPlayer(
                     var isDraggingSeeker by remember { mutableStateOf(false) }
                     val touchZoneTolerancePx = with(density) { 26.dp.toPx() }
 
-                    // Seek Dial Ring
                     Canvas(
                         Modifier
-                            .size(280.dp) // Proportional square dial size
+                            .size(280.dp)
                             .aspectRatio(1f)
                             .pointerInput(duration) {
                                 detectTapGestures { tapOffset ->
@@ -1431,7 +1574,6 @@ private fun FullPlayer(
                         }
                     }
 
-                    // True Circular Rotating Artwork Centerpiece
                     LiquidOrbWaveformCenterpiece(
                         song = song,
                         isPlaying = isPlaying,
@@ -1585,7 +1727,7 @@ private fun FloatingBottomNavBar(
         border = BorderStroke(1.2.dp, GlassBorder)
     ) {
         Row(
-            modifier = Modifier.fillMaxSize().padding(horizontal = 6.dp),
+            modifier = Modifier.fillMaxSize().padding(horizontal = 4.dp),
             horizontalArrangement = Arrangement.SpaceAround,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -1598,7 +1740,7 @@ private fun FloatingBottomNavBar(
                 )
                 BouncyButton(
                     onClick = { onSelect(tab) },
-                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
                 ) {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -1608,12 +1750,12 @@ private fun FloatingBottomNavBar(
                             tab.icon,
                             contentDescription = tab.label,
                             tint = if (selected) activeColor else MutedLavender.copy(alpha = 0.5f),
-                            modifier = Modifier.size(22.dp)
+                            modifier = Modifier.size(20.dp)
                         )
                         Text(
                             tab.label,
                             color = if (selected) activeColor else MutedLavender.copy(alpha = 0.5f),
-                            fontSize = 9.sp,
+                            fontSize = 8.5.sp,
                             fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
                         )
                     }
@@ -1633,6 +1775,7 @@ private fun HomeScreen(
     onAddToPlaylist: (Song) -> Unit,
     onAddToAlbum: (Song) -> Unit,
     onEdit: (Song) -> Unit,
+    onShowBio: (String) -> Unit,
     onNavigateLibrary: (String) -> Unit
 ) {
     val songMap = remember(songs) { songs.associateBy { it.id.toString() } }
@@ -1706,7 +1849,8 @@ private fun HomeScreen(
                     onFavorite = { onFavorite(song) },
                     onAddToPlaylist = { onAddToPlaylist(song) },
                     onAddToAlbum = { onAddToAlbum(song) },
-                    onEdit = { onEdit(song) }
+                    onEdit = { onEdit(song) },
+                    onShowBio = { onShowBio(song.artist) }
                 )
                 Spacer(Modifier.height(6.dp))
             }
@@ -1726,7 +1870,8 @@ private fun HomeScreen(
                 onFavorite = { onFavorite(song) },
                 onAddToPlaylist = { onAddToPlaylist(song) },
                 onAddToAlbum = { onAddToAlbum(song) },
-                onEdit = { onEdit(song) }
+                onEdit = { onEdit(song) },
+                onShowBio = { onShowBio(song.artist) }
             )
             Spacer(Modifier.height(6.dp))
         }
@@ -1742,7 +1887,8 @@ private fun HomeScreen(
                     onFavorite = { onFavorite(song) },
                     onAddToPlaylist = { onAddToPlaylist(song) },
                     onAddToAlbum = { onAddToAlbum(song) },
-                    onEdit = { onEdit(song) }
+                    onEdit = { onEdit(song) },
+                    onShowBio = { onShowBio(song.artist) }
                 )
                 Spacer(Modifier.height(6.dp))
             }
@@ -1772,6 +1918,7 @@ private fun LibraryScreen(
     onAddToPlaylist: (Song) -> Unit,
     onAddToAlbum: (Song) -> Unit,
     onEdit: (Song) -> Unit,
+    onShowBio: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val artistGroups = remember(allSongs) {
@@ -1849,6 +1996,14 @@ private fun LibraryScreen(
                 Text(filterKey, color = ElectricCyan, fontWeight = FontWeight.Bold, fontSize = 14.sp)
                 Spacer(Modifier.width(6.dp))
                 Text("(${songsToDisplay.size} tracks)", color = MutedLavender, fontSize = 12.sp)
+                Spacer(Modifier.weight(1f))
+                if (mode == "Artists") {
+                    TextButton(onClick = { onShowBio(filterKey) }) {
+                        Icon(Icons.Default.Info, null, tint = ElectricCyan, modifier = Modifier.size(15.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Artist Bio", color = ElectricCyan, fontSize = 12.sp)
+                    }
+                }
             }
         } else {
             Row(
@@ -1971,7 +2126,8 @@ private fun LibraryScreen(
                                     onFavorite = { onFavorite(song) },
                                     onAddToPlaylist = { onAddToPlaylist(song) },
                                     onAddToAlbum = { onAddToAlbum(song) },
-                                    onEdit = { onEdit(song) }
+                                    onEdit = { onEdit(song) },
+                                    onShowBio = { onShowBio(song.artist) }
                                 )
                             }
                         }
@@ -2211,7 +2367,8 @@ private fun SongCard(
     onFavorite: () -> Unit,
     onAddToPlaylist: () -> Unit,
     onAddToAlbum: () -> Unit,
-    onEdit: () -> Unit
+    onEdit: () -> Unit,
+    onShowBio: () -> Unit
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
     BouncyButton(onClick = onPlay, modifier = Modifier.fillMaxWidth()) {
@@ -2250,6 +2407,14 @@ private fun SongCard(
                         modifier = Modifier.background(Color(0xFF1E1436))
                     ) {
                         DropdownMenuItem(
+                            text = { Text("Artist Biography", color = Color.White) },
+                            leadingIcon = { Icon(Icons.Default.Info, null, tint = ElectricCyan) },
+                            onClick = {
+                                menuExpanded = false
+                                onShowBio()
+                            }
+                        )
+                        DropdownMenuItem(
                             text = { Text("Add to Playlist", color = Color.White) },
                             leadingIcon = { Icon(Icons.Default.PlaylistAdd, null, tint = ElectricCyan) },
                             onClick = {
@@ -2280,7 +2445,6 @@ private fun SongCard(
     }
 }
 
-// FIX: Always enforces square aspect ratio so artworks do not turn oval
 @Composable
 private fun SongThumb(song: Song, modifier: Modifier = Modifier) {
     val context = LocalContext.current
@@ -2573,7 +2737,7 @@ private fun SettingsScreen(
             }
         }
         Spacer(Modifier.height(20.dp))
-        Text("SONIQ v0.5.0 • Production Release", color = MutedLavender.copy(alpha = 0.5f), fontSize = 11.sp)
+        Text("SONIQ v0.6.0 • Production Release", color = MutedLavender.copy(alpha = 0.5f), fontSize = 11.sp)
     }
 }
 
