@@ -1,9 +1,11 @@
 package com.soniq.player.audio
 
 import android.content.Context
+import android.net.Uri
 import com.soniq.player.data.ArtworkScraper
 import com.soniq.player.data.Song
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -19,20 +21,17 @@ data class FingerprintResult(
     val matchConfidence: Float
 )
 
-/**
- * Intelligent metadata auto-cleaner and online acoustic fingerprint matcher.
- * Cleans web grab prefixes, suffixes, and queries catalog databases with track duration validation.
- */
 object AudioFingerprintFixer {
 
-    // Using raw strings ("""...""") or double-escaped backslashes prevents "Unsupported escape sequence" compiler errors
     private val SPAM_PATTERNS = listOf(
-        Regex("""(?i)\[.*?(official|audio|video|lyrics|hd|4k|download|mp3).*?\]"""),
-        Regex("""(?i)\(.*?(official|audio|video|lyrics|hd|4k|download|mp3).*?\)"""),
+        Regex("""(?i)\[.*?(official\vert{}audio\vert{}video\vert{}lyrics\vert{}hd\vert{}4k\vert{}download\vert{}mp3).*?\]"""),
+        Regex("""(?i)\(.*?(official\vert{}audio\vert{}video\vert{}lyrics\vert{}hd\vert{}4k\vert{}download\vert{}mp3).*?\)"""),
         Regex("""(?i)_320kbps|_128kbps|\.mp3|\.m4a|\.flac|\.wav"""),
-        Regex("""^[0-9]+[\s._-]+"""), // Leading track numbers like "01 - "
+        Regex("""^[0-9]+[\s._-]+"""),
         Regex("""(?i)pagalworld|mr-jatt|djpunjab|ytmp3|yt-dlp""")
     )
+
+    private val acoustIdClient = AcoustIdClient()
 
     fun cleanLocalTitle(rawTitle: String): String {
         var cleaned = rawTitle
@@ -42,15 +41,39 @@ object AudioFingerprintFixer {
         return cleaned.replace(Regex("""\s+"""), " ").trim()
     }
 
+    fun isSongUnknown(song: Song): Boolean {
+        val unknownNames = listOf("<unknown>", "unknown", "untitled", "track")
+        val artistUnknown = song.artist.isBlank() || unknownNames.any { song.artist.contains(it, ignoreCase = true) }
+        val titleIsRaw = song.title.endsWith(".mp3", ignoreCase = true) ||
+                unknownNames.any { song.title.equals(it, ignoreCase = true) } ||
+                song.title.startsWith("audio_", ignoreCase = true) ||
+                song.title.startsWith("track", ignoreCase = true)
+        return artistUnknown || titleIsRaw
+    }
+
     suspend fun autoFixSong(context: Context, song: Song): FingerprintResult = withContext(Dispatchers.IO) {
         val cleanedTitle = cleanLocalTitle(song.title)
+
+        // Step 1: Acoustic Waveform Analysis via AcoustID
+        val audioUri = Uri.parse(song.uri)
+        val pcmData = PcmAudioDecoder.extractFingerprintData(context, audioUri)
+        if (pcmData != null) {
+            val (durationSec, fingerprint) = pcmData
+            val acoustResult = acoustIdClient.lookup(durationSec, fingerprint)
+            if (acoustResult != null && acoustResult.matchConfidence >= 0.70f) {
+                val coverArt = ArtworkScraper.searchCoverArtUrl("${acoustResult.title}${acoustResult.artist}")
+                return@withContext acoustResult.copy(albumArtUrl = coverArt)
+            }
+        }
+
+        // Step 2: Fallback to iTunes Store Metadata Proximity Search
         val cleanedArtist = if (song.artist.contains("Unknown", true)) {
             ""
         } else {
             song.artist.replace(Regex("""(?i)various|unknown"""), "").trim()
         }
 
-        val searchQuery = if (cleanedArtist.isNotBlank()) "$cleanedTitle $cleanedArtist" else cleanedTitle
+        val searchQuery = if (cleanedArtist.isNotBlank()) "$cleanedTitle$cleanedArtist" else cleanedTitle
 
         try {
             val encoded = URLEncoder.encode(searchQuery, "UTF-8")
@@ -68,7 +91,6 @@ object AudioFingerprintFixer {
                 var bestIndex = 0
                 var minDiff = Long.MAX_VALUE
 
-                // Duration proximity verification
                 for (i in 0 until results.length()) {
                     val item = results.getJSONObject(i)
                     val durationMs = item.optLong("trackTimeMillis", 0L)
@@ -87,7 +109,6 @@ object AudioFingerprintFixer {
                 val fixedAlbum = best.optString("collectionName", song.album)
                 val rawArt = best.optString("artworkUrl100", "")
                 val hdArt = rawArt.replace("100x100bb", "600x600bb").ifBlank { null }
-
                 val durationMatches = minDiff < 7000
                 val confidence = if (durationMatches) 0.95f else 0.75f
 
@@ -104,5 +125,32 @@ object AudioFingerprintFixer {
         } catch (_: Exception) {
             FingerprintResult(cleanedTitle, song.artist, song.album, null, 0.3f)
         }
+    }
+
+    suspend fun batchFixAllUnknown(
+        context: Context,
+        songs: List<Song>,
+        onProgress: (current: Int, total: Int, songName: String) -> Unit,
+        onSongFixed: (Song, FingerprintResult) -> Unit
+    ): Int = withContext(Dispatchers.IO) {
+        val unknownList = songs.filter { isSongUnknown(it) }
+        val total = unknownList.size
+        var fixedCount = 0
+
+        unknownList.forEachIndexed { index, song ->
+            withContext(Dispatchers.Main) {
+                onProgress(index + 1, total, song.title)
+            }
+
+            val result = autoFixSong(context, song)
+            if (result.matchConfidence >= 0.65f) {
+                withContext(Dispatchers.Main) {
+                    onSongFixed(song, result)
+                }
+                fixedCount++
+            }
+            delay(350) // AcoustID rate-limiting safeguard
+        }
+        fixedCount
     }
 }
