@@ -48,7 +48,6 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -1281,6 +1280,7 @@ fun SoniqApp() {
     var timerMinutes by remember { mutableIntStateOf(0) }
     var customTimer by remember { mutableStateOf("25") }
     var timerLeft by remember { mutableIntStateOf(0) }
+    var editTagSong by remember { mutableStateOf<Song?>(null) }
     var libraryMode by remember { mutableStateOf("Songs") }
     val listState = rememberLazyListState()
     var selectedFilterKey by remember { mutableStateOf<String?>(null) }
@@ -1829,7 +1829,7 @@ fun SoniqApp() {
                         primaryAccent = dynamicPrimaryColor,
                         secondaryAccent = dynamicSecondaryColor,
                         gyroPitch = gyroEngine.pitch,
-                        gyroRoll = gyroRoll,
+                        gyroRoll = gyroEngine.roll,
                         onClose = { showPlayer = false },
                         onPlayPause = { controller?.let { if (it.isPlaying) it.pause() else it.play() } },
                         onNext = { controller?.seekToNextMediaItem() },
