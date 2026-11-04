@@ -12,14 +12,20 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.Settings
+import android.view.HapticFeedbackConstants
 import android.widget.Toast
+import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.shape.CircleShape
@@ -29,10 +35,23 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.*
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerInputChange
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.*
 import androidx.media3.common.MediaItem
@@ -42,18 +61,122 @@ import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import androidx.palette.graphics.Palette
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.google.common.util.concurrent.MoreExecutors
 import com.soniq.player.audio.AudioDeviceMonitor
 import com.soniq.player.audio.AudioEffectsBridge
 import com.soniq.player.audio.AudioFingerprintFixer
 import com.soniq.player.audio.AudioOutput
 import com.soniq.player.audio.GyroscopeParallaxEngine
+import com.soniq.player.audio.RealtimeFftMonitor
 import com.soniq.player.data.*
 import com.soniq.player.playback.PlaybackService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.io.File
+import kotlin.math.*
+
+private val OLEDBlack = Color(0xFF06040A)
+private val NeonPurple = Color(0xFF9B6CFF)
+private val DeepViolet = Color(0xFF6B2BEE)
+private val ElectricCyan = Color(0xFF53F6FF)
+private val AquaGlow = Color(0xFF26E0FA)
+private val MutedLavender = Color(0xFFC7BCE0)
+private val GlassPill = Color(0x351F143D)
+private val GlassBorder = Color(0x5553F6FF)
+
+enum class MainTab(val label: String, val icon: ImageVector) {
+    HOME("Home", Icons.Default.Home),
+    LIBRARY("Library", Icons.Default.LibraryMusic),
+    EQUALIZER("Equalizer", Icons.Default.Equalizer),
+    PLAYLISTS("Playlists", Icons.Default.QueueMusic),
+    SETTINGS("Settings", Icons.Default.Settings)
+}
+
+private fun applySavedMetadataOverrides(rawSongs: List<Song>, prefs: SharedPreferences): List<Song> {
+    val overridesJson = prefs.getString("song_overrides", null) ?: return rawSongs
+    return runCatching {
+        val root = JSONObject(overridesJson)
+        rawSongs.map { song ->
+            val key = song.id.toString()
+            if (root.has(key)) {
+                val obj = root.getJSONObject(key)
+                song.copy(
+                    title = obj.optString("title", song.title),
+                    artist = obj.optString("artist", song.artist),
+                    album = obj.optString("album", song.album),
+                    albumArtUri = obj.optString("art", "").ifBlank { song.albumArtUri }
+                )
+            } else song
+        }
+    }.getOrDefault(rawSongs)
+}
+
+private fun saveMetadataOverride(prefs: SharedPreferences, songId: Long, title: String, artist: String, album: String, artUri: String?) {
+    runCatching {
+        val raw = prefs.getString("song_overrides", "{}") ?: "{}"
+        val root = JSONObject(raw)
+        val entry = JSONObject().apply {
+            put("title", title)
+            put("artist", artist)
+            put("album", album)
+            if (!artUri.isNullOrBlank()) put("art", artUri)
+        }
+        root.put(songId.toString(), entry)
+        prefs.edit().putString("song_overrides", root.toString()).apply()
+    }
+}
+
+private fun timeText(ms: Long): String {
+    val s = (ms.coerceAtLeast(0L) / 1000).toInt()
+    return "%d:%02d".format(s / 60, s % 60)
+}
+
+@Composable
+fun BouncyButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) 0.88f else 1f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
+        label = "bouncy_scale"
+    )
+    Box(
+        modifier = modifier
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        content()
+    }
+}
+
+@Composable
+fun BouncyIconButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    size: Dp = 44.dp,
+    content: @Composable () -> Unit
+) {
+    BouncyButton(onClick = onClick, modifier = modifier.size(size)) {
+        content()
+    }
+}
 
 @Composable
 fun SoniqApp() {
@@ -71,8 +194,6 @@ fun SoniqApp() {
     var shuffle by remember { mutableStateOf(false) }
     var repeatMode by remember { mutableIntStateOf(Player.REPEAT_MODE_OFF) }
     var showPlayer by remember { mutableStateOf(false) }
-    var showDeepOceanLockScreen by remember { mutableStateOf(false) }
-
     var dynamicPrimaryColor by remember { mutableStateOf(NeonPurple) }
     var dynamicSecondaryColor by remember { mutableStateOf(ElectricCyan) }
     var outputs by remember { mutableStateOf<List<AudioOutput>>(emptyList()) }
@@ -120,9 +241,8 @@ fun SoniqApp() {
         onDispose { gyroEngine.stop() }
     }
 
-    BackHandler(enabled = showDeepOceanLockScreen || showPlayer || selectedFilterKey != null || currentTab != MainTab.HOME) {
+    BackHandler(enabled = showPlayer || selectedFilterKey != null || currentTab != MainTab.HOME) {
         when {
-            showDeepOceanLockScreen -> showDeepOceanLockScreen = false
             showPlayer -> showPlayer = false
             selectedFilterKey != null -> selectedFilterKey = null
             currentTab != MainTab.HOME -> currentTab = MainTab.HOME
@@ -323,7 +443,7 @@ fun SoniqApp() {
                         ?: songs.firstOrNull { it.title == title }
                 }
             }
-            delay(100)
+            delay(150)
         }
     }
 
@@ -589,7 +709,7 @@ fun SoniqApp() {
                     .padding(horizontal = 16.dp, vertical = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                if (currentSong != null && !showPlayer && !showDeepOceanLockScreen) {
+                if (currentSong != null && !showPlayer) {
                     FloatingMiniPlayer(
                         song = currentSong!!,
                         isPlaying = isPlaying,
@@ -608,8 +728,7 @@ fun SoniqApp() {
                 )
             }
 
-            // Main Now Playing Screen
-            if (showPlayer && currentSong != null && !showDeepOceanLockScreen) {
+            if (showPlayer && currentSong != null) {
                 val animatedOffsetY by animateFloatAsState(
                     targetValue = playerOffsetY,
                     animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMedium),
@@ -659,7 +778,7 @@ fun SoniqApp() {
                         gyroPitch = gyroEngine.pitch,
                         gyroRoll = gyroEngine.roll,
                         onClose = { showPlayer = false },
-                        onOpenLockScreen = { showDeepOceanLockScreen = true },
+                        onOpenLockScreen = { /* Handled via top lock icon */ },
                         onPlayPause = { controller?.let { if (it.isPlaying) it.pause() else it.play() } },
                         onNext = { controller?.seekToNextMediaItem() },
                         onPrevious = { controller?.seekToPreviousMediaItem() },
@@ -685,34 +804,6 @@ fun SoniqApp() {
                         }
                     )
                 }
-            }
-
-            // Deep Ocean Lock-Screen View (#18)
-            if (showDeepOceanLockScreen && currentSong != null) {
-                DeepOceanLockScreenView(
-                    song = currentSong!!,
-                    isPlaying = isPlaying,
-                    position = position,
-                    duration = duration,
-                    shuffle = shuffle,
-                    repeatMode = repeatMode,
-                    gyroPitch = gyroEngine.pitch,
-                    gyroRoll = gyroEngine.roll,
-                    onPlayPause = { controller?.let { if (it.isPlaying) it.pause() else it.play() } },
-                    onNext = { controller?.seekToNextMediaItem() },
-                    onPrevious = { controller?.seekToPreviousMediaItem() },
-                    onSeek = { controller?.seekTo(it) },
-                    onShuffle = { shuffle = !shuffle; controller?.shuffleModeEnabled = shuffle },
-                    onRepeat = {
-                        repeatMode = when (repeatMode) {
-                            Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
-                            Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
-                            else -> Player.REPEAT_MODE_OFF
-                        }
-                        controller?.repeatMode = repeatMode
-                    },
-                    onCloseLockScreen = { showDeepOceanLockScreen = false }
-                )
             }
 
             duplicateGroups?.let { groups ->
@@ -944,365 +1035,6 @@ fun SoniqApp() {
                     }
                 )
             }
-        }
-    }
-}
-
-@Composable
-fun FullPlayer(
-    song: Song,
-    isPlaying: Boolean,
-    position: Long,
-    duration: Long,
-    shuffle: Boolean,
-    repeatMode: Int,
-    speedMode: String,
-    slowedSpeedFactor: Float,
-    reverbStrengthFactor: Float,
-    onSlowedSpeedChange: (Float) -> Unit,
-    onReverbStrengthChange: (Float) -> Unit,
-    onSpeedModeChange: (String) -> Unit,
-    isFavorite: Boolean,
-    primaryAccent: Color,
-    secondaryAccent: Color,
-    gyroPitch: Float,
-    gyroRoll: Float,
-    onClose: () -> Unit,
-    onOpenLockScreen: () -> Unit,
-    onPlayPause: () -> Unit,
-    onNext: () -> Unit,
-    onPrevious: () -> Unit,
-    onSeek: (Long) -> Unit,
-    onShuffle: () -> Unit,
-    onRepeat: () -> Unit,
-    onToggleFavorite: () -> Unit,
-    onLaunchParty: () -> Unit,
-    onOpenEqualizer: () -> Unit
-) {
-    val context = LocalContext.current
-    var showLyrics by remember { mutableStateOf(false) }
-    var lyrics by remember { mutableStateOf<List<LyricLine>>(emptyList()) }
-    var isLoadingLyrics by remember { mutableStateOf(false) }
-
-    LaunchedEffect(song.id, song.title) {
-        isLoadingLyrics = true
-        lyrics = LyricsEngine.loadLyricsForSong(context, song)
-        isLoadingLyrics = false
-    }
-
-    Box(
-        Modifier
-            .fillMaxSize()
-            .pointerInput(Unit) { detectTapGestures { } }
-    ) {
-        LiquidWaterWaveBackground(
-            isPlaying = isPlaying,
-            primaryColor = primaryAccent,
-            secondaryColor = secondaryAccent,
-            pitch = gyroPitch,
-            roll = gyroRoll
-        )
-        Column(
-            Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding()
-                .padding(horizontal = 20.dp, vertical = 8.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Box(
-                Modifier
-                    .size(width = 44.dp, height = 5.dp)
-                    .clip(CircleShape)
-                    .background(MutedLavender.copy(alpha = 0.45f))
-            )
-            Spacer(Modifier.height(6.dp))
-
-            // Navigation Bar
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    BouncyIconButton(onClick = onClose, size = 38.dp) {
-                        Icon(Icons.Default.KeyboardArrowDown, null, tint = Color.White, modifier = Modifier.size(26.dp))
-                    }
-                    Text(
-                        "NOW PLAYING",
-                        color = MutedLavender,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp,
-                        letterSpacing = 1.sp,
-                        maxLines = 1,
-                        softWrap = false
-                    )
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    BouncyIconButton(onClick = onOpenLockScreen, size = 36.dp) {
-                        Icon(Icons.Default.Lock, "Lock Screen", tint = BioluminescentCyan, modifier = Modifier.size(20.dp))
-                    }
-                    BouncyIconButton(onClick = onLaunchParty, size = 36.dp) {
-                        Icon(Icons.Default.Headphones, "Party", tint = secondaryAccent, modifier = Modifier.size(20.dp))
-                    }
-                    BouncyIconButton(onClick = { showLyrics = !showLyrics }, size = 36.dp) {
-                        Icon(Icons.Default.Lyrics, "Lyrics", tint = if (showLyrics) secondaryAccent else MutedLavender, modifier = Modifier.size(20.dp))
-                    }
-                    BouncyIconButton(onClick = onOpenEqualizer, size = 36.dp) {
-                        Icon(Icons.Default.Equalizer, "EQ", tint = secondaryAccent, modifier = Modifier.size(20.dp))
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(6.dp))
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                listOf("Normal", "Nightcore", "Slowed").forEach { mode ->
-                    val isSel = speedMode == mode
-                    Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = if (isSel) secondaryAccent.copy(alpha = 0.22f) else Color(0x2218102C),
-                        border = BorderStroke(1.dp, if (isSel) secondaryAccent else Color(0x33C7BCE0)),
-                        modifier = Modifier
-                            .height(32.dp)
-                            .clickable { onSpeedModeChange(mode) }
-                    ) {
-                        Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 12.dp)) {
-                            Text(
-                                text = when (mode) {
-                                    "Nightcore" -> "⚡ 1.25x Nightcore"
-                                    "Slowed" -> "🌌 Slowed + Reverb"
-                                    else -> "1.0x Normal"
-                                },
-                                color = if (isSel) secondaryAccent else MutedLavender,
-                                fontSize = 11.sp,
-                                maxLines = 1,
-                                softWrap = false,
-                                fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal
-                            )
-                        }
-                    }
-                }
-            }
-
-            AnimatedVisibility(visible = speedMode == "Slowed") {
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = Color(0x6618102C),
-                    border = BorderStroke(1.dp, GlassBorder),
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
-                ) {
-                    Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("Slowed Speed", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                IconButton(
-                                    onClick = { onSlowedSpeedChange((slowedSpeedFactor - 0.05f).coerceIn(0.60f, 0.95f)) },
-                                    modifier = Modifier.size(24.dp)
-                                ) {
-                                    Icon(Icons.Default.Remove, null, tint = secondaryAccent, modifier = Modifier.size(16.dp))
-                                }
-                                Text(
-                                    "%.2fx".format(slowedSpeedFactor),
-                                    color = secondaryAccent,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 6.dp)
-                                )
-                                IconButton(
-                                    onClick = { onSlowedSpeedChange((slowedSpeedFactor + 0.05f).coerceIn(0.60f, 0.95f)) },
-                                    modifier = Modifier.size(24.dp)
-                                ) {
-                                    Icon(Icons.Default.Add, null, tint = secondaryAccent, modifier = Modifier.size(16.dp))
-                                }
-                            }
-                        }
-                        Slider(
-                            value = slowedSpeedFactor,
-                            onValueChange = onSlowedSpeedChange,
-                            valueRange = 0.60f..0.95f,
-                            colors = SliderDefaults.colors(thumbColor = secondaryAccent, activeTrackColor = secondaryAccent),
-                            modifier = Modifier.height(24.dp)
-                        )
-
-                        Spacer(Modifier.height(4.dp))
-
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("Reverb Level", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                IconButton(
-                                    onClick = { onReverbStrengthChange((reverbStrengthFactor - 0.10f).coerceIn(0f, 1f)) },
-                                    modifier = Modifier.size(24.dp)
-                                ) {
-                                    Icon(Icons.Default.Remove, null, tint = primaryAccent, modifier = Modifier.size(16.dp))
-                                }
-                                Text(
-                                    "${(reverbStrengthFactor * 100).roundToInt()}%",
-                                    color = primaryAccent,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 6.dp)
-                                )
-                                IconButton(
-                                    onClick = { onReverbStrengthChange((reverbStrengthFactor + 0.10f).coerceIn(0f, 1f)) },
-                                    modifier = Modifier.size(24.dp)
-                                ) {
-                                    Icon(Icons.Default.Add, null, tint = primaryAccent, modifier = Modifier.size(16.dp))
-                                }
-                            }
-                        }
-                        Slider(
-                            value = reverbStrengthFactor,
-                            onValueChange = onReverbStrengthChange,
-                            valueRange = 0.0f..1.0f,
-                            colors = SliderDefaults.colors(thumbColor = primaryAccent, activeTrackColor = primaryAccent),
-                            modifier = Modifier.height(24.dp)
-                        )
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(6.dp))
-
-            if (showLyrics) {
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(26.dp))
-                        .background(Color(0x6618102C))
-                        .border(1.5.dp, GlassBorder, RoundedCornerShape(26.dp))
-                        .padding(18.dp)
-                ) {
-                    if (isLoadingLyrics) {
-                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator(color = secondaryAccent)
-                        }
-                    } else if (lyrics.isEmpty()) {
-                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text(
-                                "No synchronized lyrics found for '${song.title}'.\nAuto-fix the song title to match online databases.",
-                                color = MutedLavender,
-                                fontSize = 13.sp,
-                                textAlign = TextAlign.Center
-                            )
-                        }
-                    } else {
-                        LiveSyncedKaraokeLyrics(
-                            lyrics = lyrics,
-                            positionMs = position,
-                            activeColor = secondaryAccent,
-                            onSeek = onSeek
-                        )
-                    }
-                }
-            } else {
-                Box(
-                    Modifier.weight(1f).fillMaxWidth(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    RoundedRectTimelineCenterpiece(
-                        song = song,
-                        isPlaying = isPlaying,
-                        primaryColor = primaryAccent,
-                        secondaryColor = secondaryAccent,
-                        gyroPitch = gyroPitch,
-                        gyroRoll = gyroRoll,
-                        modifier = Modifier.size(220.dp)
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(6.dp))
-
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text(song.title, color = Color.White, fontSize = 19.sp, fontWeight = FontWeight.Black, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text("${song.artist} • ${song.album}", color = MutedLavender, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-                IconButton(onClick = onToggleFavorite) {
-                    Icon(
-                        if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                        contentDescription = "Favorite",
-                        tint = if (isFavorite) Color(0xFFFF5286) else MutedLavender
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(4.dp))
-
-            WaveformSeekScrubber(
-                position = position,
-                duration = duration,
-                isPlaying = isPlaying,
-                primaryColor = primaryAccent,
-                secondaryColor = secondaryAccent,
-                onSeek = onSeek
-            )
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(timeText(position), color = MutedLavender, fontSize = 11.sp)
-                Text(timeText(duration), color = MutedLavender, fontSize = 11.sp)
-            }
-
-            Spacer(Modifier.height(6.dp))
-
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                BouncyIconButton(onClick = onShuffle) {
-                    Icon(Icons.Default.Shuffle, null, tint = if (shuffle) secondaryAccent else MutedLavender)
-                }
-                BouncyIconButton(onClick = onPrevious) {
-                    Icon(Icons.Default.SkipPrevious, null, tint = Color.White, modifier = Modifier.size(36.dp))
-                }
-                BouncyButton(onClick = onPlayPause, modifier = Modifier.size(66.dp)) {
-                    Surface(
-                        shape = CircleShape,
-                        color = primaryAccent,
-                        border = BorderStroke(2.5.dp, secondaryAccent),
-                        modifier = Modifier.fillMaxSize()
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                null,
-                                tint = Color.White,
-                                modifier = Modifier.size(36.dp)
-                            )
-                        }
-                    }
-                }
-                BouncyIconButton(onClick = onNext) {
-                    Icon(Icons.Default.SkipNext, null, tint = Color.White, modifier = Modifier.size(36.dp))
-                }
-                BouncyIconButton(onClick = onRepeat) {
-                    Icon(
-                        if (repeatMode == Player.REPEAT_MODE_ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
-                        null,
-                        tint = if (repeatMode != Player.REPEAT_MODE_OFF) secondaryAccent else MutedLavender
-                    )
-                }
-            }
-            Spacer(Modifier.height(6.dp))
         }
     }
 }
