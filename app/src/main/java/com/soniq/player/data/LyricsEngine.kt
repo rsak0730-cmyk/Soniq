@@ -36,11 +36,11 @@ object LyricsEngine {
         emptyList()
     }
 
-    fun cleanForLyricsSearch(raw: String): String {
+    private fun cleanForLyricsSearch(raw: String): String {
         return raw
             .replace("_", " ")
             .replace(Regex("""(?i)\[.*?\]|\(.*?\)"""), " ")
-            .replace(Regex("""(?i)\b(official|video|audio|lyric|lyrics|full|hd|4k|mp3|download|remix|mashup|slowed|reverb|lofi|320kbps|128kbps|ek\s*dee)\b"""), " ")
+            .replace(Regex("""(?i)\b(official|video|audio|lyric|lyrics|full|hd|4k|mp3|download|remix|mashup|slowed|reverb|lofi|320kbps|128kbps|ek\s*dee|non-s.*)\b"""), " ")
             .replace(Regex("""^[0-9]+[\s._-]+"""), " ")
             .replace(Regex("""\s+"""), " ")
             .trim()
@@ -48,11 +48,20 @@ object LyricsEngine {
 
     private fun fetchOnlineLyricsSmart(song: Song): List<LyricLine> {
         val cleanTitle = cleanForLyricsSearch(song.title)
-        val cleanArtist = if (song.artist.contains("unknown", true) || song.artist.contains("various", true)) {
+        val cleanArtist = if (song.artist.contains("unknown", true) || song.artist.contains("various", true) || song.artist.contains("original artist", true)) {
             ""
         } else cleanForLyricsSearch(song.artist)
 
         val queries = mutableListOf<String>()
+
+        if (cleanTitle.contains(" X ", ignoreCase = true)) {
+            val parts = cleanTitle.split(Regex("""(?i)\s+x\s+"""))
+            val first = cleanForLyricsSearch(parts.firstOrNull().orEmpty())
+            if (first.length >= 3) queries.add(first)
+            val second = cleanForLyricsSearch(parts.getOrNull(1).orEmpty())
+            if (second.length >= 3) queries.add(second)
+        }
+
         if (cleanArtist.isNotBlank() && cleanTitle.isNotBlank()) {
             queries.add("$cleanTitle $cleanArtist")
         }
@@ -61,10 +70,6 @@ object LyricsEngine {
             if (cleanTitle.contains("-")) {
                 val mainPart = cleanTitle.split("-").first().trim()
                 if (mainPart.length >= 3) queries.add(mainPart)
-            }
-            if (cleanTitle.contains(" X ", ignoreCase = true)) {
-                val firstPart = cleanTitle.split(Regex("""(?i)\s+x\s+""")).firstOrNull()?.trim()
-                if (!firstPart.isNullOrBlank() && firstPart.length >= 3) queries.add(firstPart)
             }
         }
 
@@ -83,7 +88,7 @@ object LyricsEngine {
             val conn = (url.openConnection() as HttpURLConnection).apply {
                 connectTimeout = 4000
                 readTimeout = 4000
-                setRequestProperty("User-Agent", "SONIQ-Player/0.9.5")
+                setRequestProperty("User-Agent", "SONIQ-Player/0.9.8")
             }
             if (conn.responseCode != 200) return emptyList()
 
