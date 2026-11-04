@@ -5,6 +5,7 @@
 )
 package com.soniq.player.ui
 
+import android.app.Activity
 import android.content.ComponentName
 import android.content.Intent
 import android.content.SharedPreferences
@@ -35,6 +36,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.*
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
@@ -62,7 +64,12 @@ import androidx.palette.graphics.Palette
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.google.common.util.concurrent.MoreExecutors
-import com.soniq.player.audio.*
+import com.soniq.player.audio.AudioDeviceMonitor
+import com.soniq.player.audio.AudioEffectsBridge
+import com.soniq.player.audio.AudioFingerprintFixer
+import com.soniq.player.audio.AudioOutput
+import com.soniq.player.audio.GyroscopeParallaxEngine
+import com.soniq.player.audio.RealtimeFftMonitor
 import com.soniq.player.data.*
 import com.soniq.player.playback.PlaybackService
 import kotlinx.coroutines.Dispatchers
@@ -167,62 +174,6 @@ fun BouncyIconButton(
 ) {
     BouncyButton(onClick = onClick, modifier = modifier.size(size)) {
         content()
-    }
-}
-
-@Composable
-fun FloatingBottomNavBar(
-    currentTab: MainTab,
-    activeColor: Color,
-    onSelect: (MainTab) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(64.dp),
-        shape = RoundedCornerShape(32.dp),
-        color = Color(0xEE100A24),
-        border = BorderStroke(1.2.dp, GlassBorder)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxSize().padding(horizontal = 6.dp),
-            horizontalArrangement = Arrangement.SpaceAround,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            MainTab.entries.forEach { tab ->
-                val selected = currentTab == tab
-                val animScale by animateFloatAsState(
-                    targetValue = if (selected) 1.15f else 1f,
-                    animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
-                    label = "tab_scale"
-                )
-                BouncyButton(
-                    onClick = { onSelect(tab) },
-                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.scale(animScale)
-                    ) {
-                        Icon(
-                            tab.icon,
-                            contentDescription = tab.label,
-                            tint = if (selected) activeColor else MutedLavender.copy(alpha = 0.5f),
-                            modifier = Modifier.size(22.dp)
-                        )
-                        Text(
-                            tab.label,
-                            color = if (selected) activeColor else MutedLavender.copy(alpha = 0.5f),
-                            fontSize = 9.sp,
-                            maxLines = 1,
-                            softWrap = false,
-                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
-                        )
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -567,7 +518,7 @@ fun SoniqApp() {
                         ?: songs.firstOrNull { it.title == title }
                 }
             }
-            delay(150)
+            delay(100)
         }
     }
 
@@ -1155,6 +1106,62 @@ fun SoniqApp() {
                         editTagSong = null
                     }
                 )
+            }
+        }
+    }
+}
+
+@Composable
+fun FloatingBottomNavBar(
+    currentTab: MainTab,
+    activeColor: Color,
+    onSelect: (MainTab) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(64.dp),
+        shape = RoundedCornerShape(32.dp),
+        color = Color(0xEE100A24),
+        border = BorderStroke(1.2.dp, GlassBorder)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxSize().padding(horizontal = 6.dp),
+            horizontalArrangement = Arrangement.SpaceAround,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            MainTab.entries.forEach { tab ->
+                val selected = currentTab == tab
+                val animScale by animateFloatAsState(
+                    targetValue = if (selected) 1.15f else 1f,
+                    animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
+                    label = "tab_scale"
+                )
+                BouncyButton(
+                    onClick = { onSelect(tab) },
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.scale(animScale)
+                    ) {
+                        Icon(
+                            tab.icon,
+                            contentDescription = tab.label,
+                            tint = if (selected) activeColor else MutedLavender.copy(alpha = 0.5f),
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Text(
+                            tab.label,
+                            color = if (selected) activeColor else MutedLavender.copy(alpha = 0.5f),
+                            fontSize = 9.sp,
+                            maxLines = 1,
+                            softWrap = false,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+                        )
+                    }
+                }
             }
         }
     }
@@ -1754,7 +1761,7 @@ fun SettingsScreen(
             )
         }
         Spacer(Modifier.height(20.dp))
-        Text("SONIQ v0.9.0 • Studio Suite", color = MutedLavender.copy(alpha = 0.5f), fontSize = 11.sp)
+        Text("SONIQ v0.9.5 • Studio Suite", color = MutedLavender.copy(alpha = 0.5f), fontSize = 11.sp)
     }
 }
 
@@ -2134,6 +2141,7 @@ fun MiniVisualizer(
     }
 }
 
+// Steady Background - zero flickering
 @Composable
 fun LiquidWaterWaveBackground(
     isPlaying: Boolean,
@@ -2216,8 +2224,9 @@ fun LiquidWaterWaveBackground(
     }
 }
 
+// Rounded Rectangle Centerpiece with Beat-Reactive Equalizer Line Bars (No Fluid Wave)
 @Composable
-fun LiquidOrbWaveformCenterpiece(
+fun RoundedRectTimelineCenterpiece(
     song: Song,
     isPlaying: Boolean,
     primaryColor: Color,
@@ -2226,77 +2235,79 @@ fun LiquidOrbWaveformCenterpiece(
     gyroRoll: Float,
     modifier: Modifier = Modifier
 ) {
-    val infiniteTransition = rememberInfiniteTransition(label = "orb_fluid")
-    val fftBass = RealtimeFftMonitor.bassEnergy
-    val wavePhase by infiniteTransition.animateFloat(
-        initialValue = 0f, targetValue = 2f * PI.toFloat(),
-        animationSpec = infiniteRepeatable(tween(if (isPlaying) 3000 else 8000, easing = LinearEasing), RepeatMode.Restart),
-        label = "phase"
-    )
+    val amplitudes = RealtimeFftMonitor.amplitudes
+    val numBars = 22
+
     Box(
         modifier = modifier
             .aspectRatio(1f)
             .graphicsLayer {
-                rotationX = gyroPitch * 14f
-                rotationY = gyroRoll * 14f
+                rotationX = gyroPitch * 12f
+                rotationY = gyroRoll * 12f
                 cameraDistance = 16f * density
             },
         contentAlignment = Alignment.Center
     ) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val r = size.minDimension / 2f
-            val c = center
-            val reactiveGlow = if (isPlaying) (fftBass * 2.5.dp.toPx()) else 0f
-            drawCircle(
-                brush = Brush.sweepGradient(
-                    listOf(secondaryColor.copy(alpha = 0.85f), primaryColor.copy(alpha = 0.85f), secondaryColor.copy(alpha = 0.85f))
-                ),
-                radius = r - 2.dp.toPx(),
-                center = c,
-                style = Stroke((2.dp.toPx() + reactiveGlow).coerceAtMost(6.dp.toPx()))
-            )
-            val wavePath = Path()
-            val amp = if (isPlaying) (12.dp.toPx() + fftBass * 16.dp.toPx()) else 5.dp.toPx()
-            val waterLevel = c.y + (r * 0.15f) + (gyroPitch * 15f)
-            wavePath.moveTo(c.x - r, waterLevel)
-            var x = c.x - r
-            while (x <= c.x + r) {
-                val relX = (x - (c.x - r)) / (2f * r)
-                val y = waterLevel + sin((relX * 2.5 * PI + wavePhase).toDouble()).toFloat() * amp
-                wavePath.lineTo(x, y)
-                x += 8f
-            }
-            wavePath.lineTo(c.x + r, c.y + r)
-            wavePath.lineTo(c.x - r, c.y + r)
-            wavePath.close()
-            drawContext.canvas.save()
-            val circleClip = Path().apply {
-                addOval(androidx.compose.ui.geometry.Rect(c.x - r + 4f, c.y - r + 4f, c.x + r - 4f, c.y + r - 4f))
-            }
-            drawContext.canvas.clipPath(circleClip)
-            drawRect(
-                brush = Brush.verticalGradient(
-                    listOf(Color(0x2253F6FF), Color(0x666B2BEE))
-                )
-            )
-            drawPath(
-                path = wavePath,
-                brush = Brush.verticalGradient(
-                    listOf(secondaryColor.copy(alpha = 0.65f), primaryColor.copy(alpha = 0.85f))
-                )
-            )
-            drawContext.canvas.restore()
-        }
+        // Base Album Artwork clipped to modern Rounded Rectangle
         SongThumb(
             song = song,
             modifier = Modifier
-                .fillMaxSize(0.96f)
-                .aspectRatio(1f)
-                .clip(CircleShape)
+                .fillMaxSize(0.92f)
+                .clip(RoundedCornerShape(32.dp))
         )
+
+        // Overlay with gradient shade & Beat-Reactive timeline equalizer line bars
+        Canvas(modifier = Modifier.fillMaxSize(0.92f)) {
+            val w = size.width
+            val h = size.height
+            val corner = 32.dp.toPx()
+
+            // Outer Glow & Border for Rounded Rectangle
+            drawRoundRect(
+                brush = Brush.sweepGradient(
+                    listOf(secondaryColor, primaryColor, secondaryColor)
+                ),
+                size = size,
+                cornerRadius = CornerRadius(corner, corner),
+                style = Stroke(2.5.dp.toPx())
+            )
+
+            // Semi-transparent bottom scrim so timeline line bars stand out
+            drawRoundRect(
+                brush = Brush.verticalGradient(
+                    0.5f to Color.Transparent,
+                    1.0f to Color(0xDD0B071A)
+                ),
+                size = size,
+                cornerRadius = CornerRadius(corner, corner)
+            )
+
+            // Beat-Reactive Timeline Line Bars
+            val barWidth = 4.5.dp.toPx()
+            val totalBarsWidth = numBars * barWidth
+            val spacing = (w * 0.76f - totalBarsWidth) / (numBars - 1).coerceAtLeast(1)
+            val startX = (w * 0.12f)
+            val bottomY = h - 22.dp.toPx()
+
+            for (i in 0 until numBars) {
+                val amp = if (isPlaying) amplitudes[i % amplitudes.size] else 0.12f
+                val barHeight = (42.dp.toPx() * amp).coerceIn(4.dp.toPx(), 44.dp.toPx())
+                val bx = startX + i * (barWidth + spacing)
+
+                drawRoundRect(
+                    brush = Brush.verticalGradient(
+                        listOf(secondaryColor, primaryColor)
+                    ),
+                    topLeft = Offset(bx, bottomY - barHeight),
+                    size = Size(barWidth, barHeight),
+                    cornerRadius = CornerRadius(2.5.dp.toPx(), 2.5.dp.toPx())
+                )
+            }
+        }
     }
 }
 
+// Scrubber Bar - Pure static timeline representation without beat bouncing
 @Composable
 fun WaveformSeekScrubber(
     position: Long,
@@ -2306,9 +2317,18 @@ fun WaveformSeekScrubber(
     onSeek: (Long) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val amplitudes = RealtimeFftMonitor.amplitudes
     val progress = if (duration > 0) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f
     val barCount = 38
+    val staticPattern = remember {
+        listOf(
+            0.25f, 0.45f, 0.70f, 0.35f, 0.80f, 0.95f, 0.60f, 0.40f,
+            0.65f, 0.85f, 0.50f, 0.30f, 0.75f, 0.90f, 0.60f, 0.45f,
+            0.85f, 0.70f, 0.55f, 0.40f, 0.65f, 0.80f, 0.95f, 0.50f,
+            0.35f, 0.60f, 0.75f, 0.85f, 0.60f, 0.45f, 0.70f, 0.85f,
+            0.55f, 0.40f, 0.65f, 0.50f, 0.35f, 0.20f
+        )
+    }
+
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -2332,8 +2352,8 @@ fun WaveformSeekScrubber(
             val spacing = (size.width - (barCount * barWidth)) / (barCount - 1)
             val midY = size.height / 2f
             for (i in 0 until barCount) {
-                val amp = amplitudes[i % amplitudes.size]
-                val barHeight = (size.height * 0.85f * amp).coerceAtLeast(6.dp.toPx())
+                val heightFraction = staticPattern[i % staticPattern.size]
+                val barHeight = (size.height * 0.75f * heightFraction).coerceAtLeast(6.dp.toPx())
                 val x = i * (barWidth + spacing)
                 val isFilled = (i.toFloat() / barCount) <= progress
                 val brush = if (isFilled) {
@@ -2345,8 +2365,92 @@ fun WaveformSeekScrubber(
                     brush = brush,
                     topLeft = Offset(x, midY - barHeight / 2),
                     size = Size(barWidth, barHeight),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(4.dp.toPx())
+                    cornerRadius = CornerRadius(4.dp.toPx())
                 )
+            }
+        }
+    }
+}
+
+// Live Synchronized Karaoke Lyrics View with Word-by-Word Neon Glow
+@Composable
+fun LiveSyncedKaraokeLyrics(
+    lyrics: List<LyricLine>,
+    positionMs: Long,
+    activeColor: Color,
+    onSeek: (Long) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val listState = rememberLazyListState()
+    val activeLineIdx = remember(positionMs, lyrics) {
+        lyrics.indexOfLast { it.timestampMs <= positionMs }.coerceAtLeast(0)
+    }
+
+    LaunchedEffect(activeLineIdx) {
+        if (lyrics.isNotEmpty()) {
+            listState.animateScrollToItem((activeLineIdx - 2).coerceAtLeast(0))
+        }
+    }
+
+    LazyColumn(state = listState, modifier = modifier.fillMaxSize()) {
+        itemsIndexed(lyrics) { idx, line ->
+            val isCurrentLine = idx == activeLineIdx
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 10.dp)
+                    .clickable { onSeek(line.timestampMs) },
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                if (!isCurrentLine || line.words.isEmpty()) {
+                    // Standard inactive lines
+                    Text(
+                        text = line.text,
+                        color = if (isCurrentLine) activeColor else MutedLavender.copy(alpha = 0.40f),
+                        fontSize = if (isCurrentLine) 21.sp else 15.sp,
+                        fontWeight = if (isCurrentLine) FontWeight.Black else FontWeight.Normal,
+                        textAlign = TextAlign.Center
+                    )
+                } else {
+                    // Active line: word-by-word live neon glowing karaoke renderer
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        line.words.forEach { word ->
+                            val isWordSung = positionMs >= word.startMs
+                            val isWordActive = positionMs in word.startMs..word.endMs
+
+                            val wordColor = when {
+                                isWordActive -> Color.White
+                                isWordSung -> activeColor
+                                else -> MutedLavender.copy(alpha = 0.45f)
+                            }
+
+                            val wordScale by animateFloatAsState(
+                                targetValue = if (isWordActive) 1.15f else 1.0f,
+                                animationSpec = spring(stiffness = Spring.StiffnessHigh),
+                                label = "word_glow"
+                            )
+
+                            Text(
+                                text = "${word.text} ",
+                                color = wordColor,
+                                fontSize = 21.sp,
+                                fontWeight = if (isWordSung) FontWeight.Black else FontWeight.Bold,
+                                modifier = Modifier.graphicsLayer {
+                                    scaleX = wordScale
+                                    scaleY = wordScale
+                                    if (isWordActive) {
+                                        shadowElevation = 18f
+                                    }
+                                }
+                            )
+                        }
+                    }
+                }
             }
         }
     }
@@ -2383,13 +2487,9 @@ fun FullPlayer(
     onOpenEqualizer: () -> Unit
 ) {
     val context = LocalContext.current
-    val view = LocalView.current
     var showLyrics by remember { mutableStateOf(false) }
     var lyrics by remember { mutableStateOf<List<LyricLine>>(emptyList()) }
     var isLoadingLyrics by remember { mutableStateOf(false) }
-    val lyricsListState = rememberLazyListState()
-    val fftBass = RealtimeFftMonitor.bassEnergy
-    val density = LocalDensity.current
 
     LaunchedEffect(song.id, song.title) {
         isLoadingLyrics = true
@@ -2397,30 +2497,7 @@ fun FullPlayer(
         isLoadingLyrics = false
     }
 
-    val currentLyricIndex = remember(position, lyrics) {
-        lyrics.indexOfLast { it.timestampMs <= position }.coerceAtLeast(0)
-    }
-
-    LaunchedEffect(currentLyricIndex) {
-        if (showLyrics && lyrics.isNotEmpty()) {
-            lyricsListState.animateScrollToItem((currentLyricIndex - 2).coerceAtLeast(0))
-        }
-    }
-
     val progress = if (duration > 0) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f
-    val infiniteTransition = rememberInfiniteTransition(label = "player_liquid")
-    val pulseGlow by infiniteTransition.animateFloat(
-        initialValue = 0.75f,
-        targetValue = 1.15f,
-        animationSpec = infiniteRepeatable(tween(1800, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-        label = "glow"
-    )
-    val wavePhaseAnim by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 2f * PI.toFloat(),
-        animationSpec = infiniteRepeatable(tween(2400, easing = LinearEasing), RepeatMode.Restart),
-        label = "timeline_wave_phase"
-    )
 
     Box(
         Modifier
@@ -2450,6 +2527,7 @@ fun FullPlayer(
             )
             Spacer(Modifier.height(6.dp))
 
+            // Navigation Bar
             Row(
                 Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -2484,6 +2562,7 @@ fun FullPlayer(
 
             Spacer(Modifier.height(6.dp))
 
+            // Mode Selector
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -2625,29 +2704,19 @@ fun FullPlayer(
                     } else if (lyrics.isEmpty()) {
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Text(
-                                "No synchronized lyrics found for '${song.title}'.\nAuto-fix the song title to match online databases.",
+                                "No synchronized lyrics found for '${song.title}'.\nTap the Auto-Fix button to clean this track's metadata.",
                                 color = MutedLavender,
                                 fontSize = 13.sp,
                                 textAlign = TextAlign.Center
                             )
                         }
                     } else {
-                        LazyColumn(state = lyricsListState, modifier = Modifier.fillMaxSize()) {
-                            itemsIndexed(lyrics) { idx, line ->
-                                val isCurrent = idx == currentLyricIndex
-                                Text(
-                                    text = line.text,
-                                    color = if (isCurrent) secondaryAccent else MutedLavender.copy(alpha = 0.45f),
-                                    fontSize = if (isCurrent) 20.sp else 15.sp,
-                                    fontWeight = if (isCurrent) FontWeight.Black else FontWeight.Normal,
-                                    textAlign = TextAlign.Center,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(vertical = 10.dp)
-                                        .clickable { onSeek(line.timestampMs) }
-                                )
-                            }
-                        }
+                        LiveSyncedKaraokeLyrics(
+                            lyrics = lyrics,
+                            positionMs = position,
+                            activeColor = secondaryAccent,
+                            onSeek = onSeek
+                        )
                     }
                 }
             } else {
@@ -2660,23 +2729,23 @@ fun FullPlayer(
                     var canvasCenter by remember { mutableStateOf(Offset.Zero) }
                     var baseRadiusPx by remember { mutableFloatStateOf(0f) }
                     var isDraggingSeeker by remember { mutableStateOf(false) }
-                    val touchZoneTolerancePx = with(density) { 26.dp.toPx() }
 
+                    // Circular Seeker Arc - Clean Static Sweep without beat distortion
                     Canvas(
                         Modifier
-                            .size(265.dp)
+                            .size(270.dp)
                             .aspectRatio(1f)
                             .pointerInput(duration) {
                                 detectTapGestures { tapOffset ->
                                     val dx = tapOffset.x - canvasCenter.x
                                     val dy = tapOffset.y - canvasCenter.y
                                     val dist = hypot(dx, dy)
-                                    if (abs(dist - baseRadiusPx) <= touchZoneTolerancePx && duration > 0) {
+                                    if (abs(dist - baseRadiusPx) <= 30.dp.toPx() && duration > 0) {
                                         var angle = Math.toDegrees(atan2(dy.toDouble(), dx.toDouble())).toFloat() + 90f
                                         if (angle < 0) angle += 360f
                                         val seekPercent = (angle / 360f).coerceIn(0f, 1f)
                                         onSeek((seekPercent * duration).toLong())
-                                        view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                        (context as? Activity)?.window?.decorView?.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                                     }
                                 }
                             }
@@ -2686,7 +2755,7 @@ fun FullPlayer(
                                         val dx = startOffset.x - canvasCenter.x
                                         val dy = startOffset.y - canvasCenter.y
                                         val dist = hypot(dx, dy)
-                                        isDraggingSeeker = abs(dist - baseRadiusPx) <= touchZoneTolerancePx
+                                        isDraggingSeeker = abs(dist - baseRadiusPx) <= 30.dp.toPx()
                                     },
                                     onDragEnd = { isDraggingSeeker = false },
                                     onDragCancel = { isDraggingSeeker = false },
@@ -2701,88 +2770,56 @@ fun FullPlayer(
                                             val seekPercent = (angle / 360f).coerceIn(0f, 1f)
                                             val targetMs = (seekPercent * duration).toLong()
                                             onSeek(targetMs)
-                                            view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                            (context as? Activity)?.window?.decorView?.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                                         }
                                     }
                                 )
                             }
                     ) {
                         canvasCenter = center
-                        val strokeWidth = 3.2.dp.toPx()
-                        val outerGlowWidth = 7.dp.toPx()
                         val baseRadius = (size.minDimension - 24.dp.toPx()) / 2f
                         baseRadiusPx = baseRadius
+
+                        // Static background track
                         drawCircle(
                             color = Color(0x352B194E),
                             radius = baseRadius,
                             center = center,
                             style = Stroke(2.dp.toPx(), cap = StrokeCap.Round)
                         )
+
+                        // Smooth static progress arc
                         val sweepAngle = 360f * progress
                         if (sweepAngle > 0f) {
-                            val wavePath = Path()
-                            val steps = (sweepAngle * 1.5f).toInt().coerceAtLeast(8)
-                            val waveAmplitude = if (isPlaying) (1.1.dp.toPx() + fftBass * 1.6.dp.toPx()) else 0.7.dp.toPx()
-                            val waveFreq = 10.0
-                            var tipX = center.x
-                            var tipY = center.y
-                            for (i in 0..steps) {
-                                val currentDeg = -90f + (sweepAngle * (i.toFloat() / steps))
-                                val rad = Math.toRadians(currentDeg.toDouble())
-                                val waveOffset = sin((i.toDouble() / steps) * waveFreq * PI + wavePhaseAnim) * waveAmplitude
-                                val r = baseRadius + waveOffset.toFloat()
-                                val px = center.x + (r * cos(rad)).toFloat()
-                                val py = center.y + (r * sin(rad)).toFloat()
-                                if (i == 0) wavePath.moveTo(px, py) else wavePath.lineTo(px, py)
-                                if (i == steps) {
-                                    tipX = px
-                                    tipY = py
-                                }
-                            }
-                            drawPath(
-                                path = wavePath,
+                            drawArc(
                                 brush = Brush.sweepGradient(
-                                    listOf(
-                                        primaryAccent.copy(alpha = 0.25f * pulseGlow),
-                                        secondaryAccent.copy(alpha = 0.35f * pulseGlow),
-                                        primaryAccent.copy(alpha = 0.25f * pulseGlow)
-                                    )
+                                    listOf(secondaryAccent, primaryAccent, secondaryAccent)
                                 ),
-                                style = Stroke(outerGlowWidth, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                                startAngle = -90f,
+                                sweepAngle = sweepAngle,
+                                useCenter = false,
+                                style = Stroke(3.2.dp.toPx(), cap = StrokeCap.Round)
                             )
-                            drawPath(
-                                path = wavePath,
-                                brush = Brush.sweepGradient(
-                                    0.0f to secondaryAccent,
-                                    0.5f to primaryAccent,
-                                    1.0f to secondaryAccent
-                                ),
-                                style = Stroke(strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round)
-                            )
-                            val dropletRadius = (3.5.dp.toPx() + fftBass * 1.4.dp.toPx())
-                            drawCircle(color = secondaryAccent.copy(alpha = 0.4f * pulseGlow), radius = dropletRadius + 3.dp.toPx(), center = Offset(tipX, tipY))
-                            drawCircle(color = Color.White, radius = dropletRadius, center = Offset(tipX, tipY))
-                            drawCircle(color = secondaryAccent, radius = (dropletRadius * 0.5f), center = Offset(tipX, tipY))
+
+                            // Scrubber tip ball
+                            val tipRad = Math.toRadians((-90f + sweepAngle).toDouble())
+                            val tipX = center.x + (baseRadius * cos(tipRad)).toFloat()
+                            val tipY = center.y + (baseRadius * sin(tipRad)).toFloat()
+                            drawCircle(color = secondaryAccent.copy(alpha = 0.4f), radius = 7.dp.toPx(), center = Offset(tipX, tipY))
+                            drawCircle(color = Color.White, radius = 4.dp.toPx(), center = Offset(tipX, tipY))
                         }
                     }
 
-                    LiquidOrbWaveformCenterpiece(
+                    // Rounded Rectangle Centerpiece with Beat-Reactive Equalizer Line Bars
+                    RoundedRectTimelineCenterpiece(
                         song = song,
                         isPlaying = isPlaying,
                         primaryColor = primaryAccent,
                         secondaryColor = secondaryAccent,
                         gyroPitch = gyroPitch,
                         gyroRoll = gyroRoll,
-                        modifier = Modifier.size(195.dp)
+                        modifier = Modifier.size(200.dp)
                     )
-
-                    if (isPlaying) {
-                        MiniVisualizer(
-                            accent1 = secondaryAccent,
-                            accent2 = primaryAccent,
-                            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 4.dp)
-                        )
-                    }
                 }
             }
 

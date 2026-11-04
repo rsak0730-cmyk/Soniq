@@ -12,7 +12,13 @@ import java.net.URL
 import java.net.URLEncoder
 import java.util.regex.Pattern
 
-data class LyricLine(val timestampMs: Long, val text: String)
+data class TimedWord(val text: String, val startMs: Long, val endMs: Long)
+
+data class LyricLine(
+    val timestampMs: Long,
+    val text: String,
+    val words: List<TimedWord> = emptyList()
+)
 
 object LyricsEngine {
     private val LRC_PATTERN = Pattern.compile("""\[(\d{2}):(\d{2})(?:\.(\d{2,3}))?\](.*)""")
@@ -30,11 +36,11 @@ object LyricsEngine {
         emptyList()
     }
 
-    private fun cleanForLyricsSearch(raw: String): String {
+    fun cleanForLyricsSearch(raw: String): String {
         return raw
             .replace("_", " ")
             .replace(Regex("""(?i)\[.*?\]|\(.*?\)"""), " ")
-            .replace(Regex("""(?i)\b(official|video|audio|lyric|lyrics|full|hd|4k|mp3|download|remix|mashup|slowed|reverb|lofi|320kbps|128kbps)\b"""), " ")
+            .replace(Regex("""(?i)\b(official|video|audio|lyric|lyrics|full|hd|4k|mp3|download|remix|mashup|slowed|reverb|lofi|320kbps|128kbps|ek\s*dee)\b"""), " ")
             .replace(Regex("""^[0-9]+[\s._-]+"""), " ")
             .replace(Regex("""\s+"""), " ")
             .trim()
@@ -42,10 +48,9 @@ object LyricsEngine {
 
     private fun fetchOnlineLyricsSmart(song: Song): List<LyricLine> {
         val cleanTitle = cleanForLyricsSearch(song.title)
-        val isUnknownArtist = song.artist.contains("unknown", true) ||
-                song.artist.contains("various", true) ||
-                song.artist.contains("download", true)
-        val cleanArtist = if (isUnknownArtist) "" else cleanForLyricsSearch(song.artist)
+        val cleanArtist = if (song.artist.contains("unknown", true) || song.artist.contains("various", true)) {
+            ""
+        } else cleanForLyricsSearch(song.artist)
 
         val queries = mutableListOf<String>()
         if (cleanArtist.isNotBlank() && cleanTitle.isNotBlank()) {
@@ -53,17 +58,19 @@ object LyricsEngine {
         }
         if (cleanTitle.isNotBlank()) {
             queries.add(cleanTitle)
+            if (cleanTitle.contains("-")) {
+                val mainPart = cleanTitle.split("-").first().trim()
+                if (mainPart.length >= 3) queries.add(mainPart)
+            }
             if (cleanTitle.contains(" X ", ignoreCase = true)) {
                 val firstPart = cleanTitle.split(Regex("""(?i)\s+x\s+""")).firstOrNull()?.trim()
-                if (!firstPart.isNullOrBlank() && firstPart.length >= 3) {
-                    queries.add(firstPart)
-                }
+                if (!firstPart.isNullOrBlank() && firstPart.length >= 3) queries.add(firstPart)
             }
         }
 
         for (query in queries.distinct()) {
             val found = searchLrcLib(query, song.durationMs)
-            if (found.isNotEmpty()) return found
+            if (found.isNotEmpty()) return postProcessWordTimings(found, song.durationMs)
         }
 
         return emptyList()
@@ -74,11 +81,10 @@ object LyricsEngine {
             val encoded = URLEncoder.encode(query, "UTF-8")
             val url = URL("https://lrclib.net/api/search?q=$encoded")
             val conn = (url.openConnection() as HttpURLConnection).apply {
-                connectTimeout = 4500
-                readTimeout = 4500
-                setRequestProperty("User-Agent", "SONIQ-Player/0.9.0")
+                connectTimeout = 4000
+                readTimeout = 4000
+                setRequestProperty("User-Agent", "SONIQ-Player/0.9.5")
             }
-
             if (conn.responseCode != 200) return emptyList()
 
             val body = conn.inputStream.bufferedReader().use { it.readText() }
@@ -108,11 +114,35 @@ object LyricsEngine {
                     }
                 }
             }
-
             emptyList()
         } catch (_: Exception) {
             emptyList()
         }
+    }
+
+    private fun postProcessWordTimings(lines: List<LyricLine>, totalDurationMs: Long): List<LyricLine> {
+        if (lines.isEmpty()) return emptyList()
+        val processed = mutableListOf<LyricLine>()
+
+        for (i in lines.indices) {
+            val current = lines[i]
+            val nextTime = if (i + 1 < lines.size) lines[i + 1].timestampMs else (current.timestampMs + 4000L).coerceAtMost(totalDurationMs)
+            val lineDuration = (nextTime - current.timestampMs).coerceIn(1200L, 8000L)
+
+            val rawWords = current.text.split(Regex("""\s+""")).filter { it.isNotBlank() }
+            if (rawWords.isNotEmpty()) {
+                val wordDuration = lineDuration / rawWords.size
+                val timedWords = rawWords.mapIndexed { wIdx, wText ->
+                    val wStart = current.timestampMs + (wIdx * wordDuration)
+                    val wEnd = wStart + wordDuration
+                    TimedWord(wText, wStart, wEnd)
+                }
+                processed.add(current.copy(words = timedWords))
+            } else {
+                processed.add(current)
+            }
+        }
+        return processed
     }
 
     private fun loadLocalLrc(context: Context, song: Song): List<LyricLine> {
@@ -135,7 +165,7 @@ object LyricsEngine {
                 }
             }
         }
-        return lines.sortedBy { it.timestampMs }
+        return if (lines.isNotEmpty()) postProcessWordTimings(lines.sortedBy { it.timestampMs }, song.durationMs) else emptyList()
     }
 
     private fun parseLrcLine(rawLine: String): LyricLine? {
