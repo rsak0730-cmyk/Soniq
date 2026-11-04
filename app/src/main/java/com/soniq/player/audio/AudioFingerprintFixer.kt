@@ -1,7 +1,6 @@
 package com.soniq.player.audio
 
 import android.content.Context
-import android.net.Uri
 import com.soniq.player.data.Song
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Semaphore
@@ -56,13 +55,11 @@ object AudioFingerprintFixer {
     suspend fun autoFixSong(context: Context, song: Song): FingerprintResult = withContext(Dispatchers.IO) {
         val cleanedTitle = cleanLocalTitle(song.title)
 
-        // Pass 1: Multi-query Catalog Search (Takes ~150ms per song, 98% accuracy on Bollywood & pop)
         val onlineMatch = queryOnlineFast(cleanedTitle, song)
         if (onlineMatch != null && onlineMatch.matchConfidence >= 0.60f) {
             return@withContext onlineMatch
         }
 
-        // Pass 2: Cleaned Fallback
         val safeArtist = if (song.artist.contains("unknown", true) || song.artist.isBlank()) "Various Artists" else song.artist
         onlineMatch ?: FingerprintResult(
             title = cleanedTitle.ifBlank { song.title },
@@ -81,7 +78,6 @@ object AudioFingerprintFixer {
         if (cleanArtist.isNotBlank()) queries.add("$cleanedTitle $cleanArtist")
         queries.add(cleanedTitle)
 
-        // For titles like "Dhun Song Saiyaara Ah", search the primary core word
         val words = cleanedTitle.split(" ").filter { it.length >= 4 }
         if (words.isNotEmpty()) queries.add(words.joinToString(" "))
 

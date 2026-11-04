@@ -18,11 +18,9 @@ object LyricsEngine {
     private val LRC_PATTERN = Pattern.compile("""\[(\d{2}):(\d{2})(?:\.(\d{2,3}))?\](.*)""")
 
     suspend fun loadLyricsForSong(context: Context, song: Song): List<LyricLine> = withContext(Dispatchers.IO) {
-        // 1. Check cached .lrc or local storage file
         val localLyrics = loadLocalLrc(context, song)
         if (localLyrics.isNotEmpty()) return@withContext localLyrics
 
-        // 2. Fetch via LRCLIB Fuzzy Search
         val onlineLyrics = fetchOnlineLyricsSmart(song)
         if (onlineLyrics.isNotEmpty()) {
             cacheLyricsToFile(context, song.id, onlineLyrics)
@@ -51,7 +49,7 @@ object LyricsEngine {
 
         val queries = mutableListOf<String>()
         if (cleanArtist.isNotBlank() && cleanTitle.isNotBlank()) {
-            queries.add("$cleanTitle$cleanArtist")
+            queries.add("$cleanTitle $cleanArtist")
         }
         if (cleanTitle.isNotBlank()) {
             queries.add(cleanTitle)
@@ -78,7 +76,7 @@ object LyricsEngine {
             val conn = (url.openConnection() as HttpURLConnection).apply {
                 connectTimeout = 4500
                 readTimeout = 4500
-                setRequestProperty("User-Agent", "SONIQ-Android-Player/0.9.0")
+                setRequestProperty("User-Agent", "SONIQ-Player/0.9.0")
             }
 
             if (conn.responseCode != 200) return emptyList()
