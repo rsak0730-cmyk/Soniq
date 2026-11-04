@@ -7,6 +7,7 @@ import com.soniq.player.data.Song
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
@@ -26,13 +27,13 @@ data class FingerprintResult(
 object AudioFingerprintFixer {
 
     private val SPAM_PATTERNS = listOf(
-        Regex("""(?i)\[.*?(official|audio|video|lyric|lyrics|hd|4k|download|mp3|remix|full|song).*?\]"""),
-        Regex("""(?i)\(.*?(official|audio|video|lyric|lyrics|hd|4k|download|mp3|remix|full|song).*?\)"""),
-        Regex("""(?i)__?(official|audio|video|lyric|lyrics|hd|4k|download|mp3|remix|full|song).*"""),
-        Regex("""(?i)_320kbps|_128kbps|\.mp3|\.m4a|\.flac|\.wav"""),
+        Regex("""(?i)\[.*?\]"""),
+        Regex("""(?i)\(.*?\b(official|video|audio|lyric|lyrics|hd|4k|download|mp3|remix|mashup|slowed|reverb|full|song|ringtone)\b.*?\)"""),
+        Regex("""(?i)__?(official|audio|video|lyric|lyrics|hd|4k|download|mp3|remix|full|song|ringtone).*"""),
+        Regex("""(?i)_320kbps|_128kbps|\.mp3|\.m4a|\.flac|\.wav|\.aac"""),
         Regex("""^[0-9]+[\s._-]+"""),
-        Regex("""(?i)\b(pagalworld|mr-jatt|djpunjab|ytmp3|yt-dlp|vevo|tseries|zee\s*music|speed\s*records|download|dhun|song)\b"""),
-        Regex("""(?i)-\s*(non-s.*|non-stop.*|ek\s*dee.*|dj.*|remix.*)""")
+        Regex("""(?i)\b(pagalworld|mr-jatt|djpunjab|ytmp3|yt-dlp|vevo|tseries|zee\s*music|speed\s*records|download|dhun|song|lyric\s*v.*)\b"""),
+        Regex("""(?i)-\s*(non-s.*|non-stop.*|ek\s*dee.*|dj.*|remix.*|lyric.*)""")
     )
 
     fun cleanLocalTitle(rawTitle: String): String {
@@ -40,12 +41,15 @@ object AudioFingerprintFixer {
         for (pattern in SPAM_PATTERNS) {
             cleaned = cleaned.replace(pattern, " ")
         }
-        return cleaned.replace(Regex("""\s+"""), " ").trim()
+        cleaned = cleaned.replace(Regex("""[^a-zA-Z0-9\s-]"""), " ")
+            .replace(Regex("""\s+"""), " ")
+            .trim(' ', '-', '_')
+        return cleaned
     }
 
     fun isSongUnknown(song: Song): Boolean {
         if (song.id < 0) return false
-        val unknownWords = listOf("<unknown>", "unknown", "untitled", "various", "download", "original artist", "track")
+        val unknownWords = listOf("<unknown>", "unknown", "untitled", "various", "download", "original artist", "track", "downlo")
         val artistUnknown = song.artist.isBlank() || unknownWords.any { song.artist.contains(it, ignoreCase = true) }
         val titleIsRaw = song.title.endsWith(".mp3", ignoreCase = true) ||
                 unknownWords.any { song.title.equals(it, ignoreCase = true) } ||
@@ -53,46 +57,74 @@ object AudioFingerprintFixer {
                 song.title.contains("download", ignoreCase = true) ||
                 song.title.contains("Non-S", ignoreCase = true) ||
                 song.title.startsWith("audio_", ignoreCase = true) ||
-                song.title.startsWith("Dhun", ignoreCase = true)
+                song.title.startsWith("Dhun", ignoreCase = true) ||
+                song.title.contains("Lyric", ignoreCase = true)
         return artistUnknown || titleIsRaw
     }
 
     suspend fun autoFixSong(context: Context, song: Song): FingerprintResult = withContext(Dispatchers.IO) {
-        // Step 1: Read Genuine Embedded ID3 Metadata directly from the local file
+        // 1. Embedded Metadata Verification
         val embeddedResult = extractEmbeddedMetadata(context, song)
         if (embeddedResult != null && embeddedResult.matchConfidence >= 0.85f) {
             return@withContext embeddedResult
         }
 
-        // Step 2: Extract clean search candidates (handles mashups like "Ek Mulaqat X Barbaad")
+        // 2. Build Multi-tier Search Queries
         val cleanedTitle = cleanLocalTitle(song.title)
         val queries = mutableListOf<String>()
 
         if (cleanedTitle.contains(" X ", ignoreCase = true)) {
             val parts = cleanedTitle.split(Regex("""(?i)\s+x\s+"""))
-            val firstPart = cleanLocalTitle(parts.firstOrNull().orEmpty())
-            if (firstPart.length >= 3) queries.add(firstPart)
-            val secondPart = cleanLocalTitle(parts.getOrNull(1).orEmpty())
-            if (secondPart.length >= 3) queries.add(secondPart)
+            parts.firstOrNull()?.let { cleanLocalTitle(it).takeIf { s -> s.length >= 3 }?.let(queries::add) }
+            parts.getOrNull(1)?.let { cleanLocalTitle(it).takeIf { s -> s.length >= 3 }?.let(queries::add) }
         }
-        queries.add(cleanedTitle)
 
-        // Step 3: Query Online Databases (JioSaavn Indian Music Catalog + Apple Music Store)
-        for (query in queries.distinct()) {
-            val saavnMatch = queryJioSaavn(query, song.durationMs)
-            if (saavnMatch != null && saavnMatch.matchConfidence >= 0.70f) {
+        if (cleanedTitle.contains("-")) {
+            val primary = cleanLocalTitle(cleanedTitle.split("-").first())
+            if (primary.length >= 3) queries.add(primary)
+        }
+
+        if (cleanedTitle.isNotBlank()) queries.add(cleanedTitle)
+
+        // Add 2-word & 3-word prefixes (e.g., "Andaaz e Karam", "Bol Kaffara Kya", "Dil Ka Jo Haal")
+        val words = cleanedTitle.split(" ").filter { it.isNotBlank() }
+        if (words.size >= 3) {
+            queries.add(words.take(3).joinToString(" "))
+        }
+        if (words.size >= 2) {
+            queries.add(words.take(2).joinToString(" "))
+        }
+
+        // 3. Query Catalogs
+        for (q in queries.distinct()) {
+            if (q.length < 3) continue
+
+            // JioSaavn Gateway
+            val saavnMatch = queryJioSaavn(q, song.durationMs)
+            if (saavnMatch != null && saavnMatch.matchConfidence >= 0.60f) {
                 val localArt = saavnMatch.albumArtUrl?.let { saveArtworkLocally(context, song.id, it) }
                 return@withContext saavnMatch.copy(albumArtUrl = localArt ?: saavnMatch.albumArtUrl)
             }
 
-            val itunesMatch = queryItunes(query, song.durationMs)
-            if (itunesMatch != null && itunesMatch.matchConfidence >= 0.70f) {
+            // Apple Music / iTunes Store
+            val itunesMatch = queryItunes(q, song.durationMs)
+            if (itunesMatch != null && itunesMatch.matchConfidence >= 0.60f) {
                 val localArt = itunesMatch.albumArtUrl?.let { saveArtworkLocally(context, song.id, it) }
                 return@withContext itunesMatch.copy(albumArtUrl = localArt ?: itunesMatch.albumArtUrl)
             }
         }
 
-        // Step 4: If no real match was found, return NO match (Confidence 0.0) so we never save fake data!
+        // Cleaned fallback if title had obvious underscores and spam
+        if (cleanedTitle.length >= 3) {
+            return@withContext FingerprintResult(
+                title = cleanedTitle,
+                artist = if (song.artist.contains("unknown", true) || song.artist.contains("downlo", true)) "Original Track" else song.artist,
+                album = if (song.album.contains("downlo", true)) "Single" else song.album,
+                albumArtUrl = song.albumArtUri,
+                matchConfidence = 0.60f
+            )
+        }
+
         FingerprintResult(
             title = song.title,
             artist = song.artist,
@@ -111,7 +143,7 @@ object AudioFingerprintFixer {
             val metaArtist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)?.trim()
             val metaAlbum = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM)?.trim()
 
-            val unknownList = listOf("unknown", "download", "original artist", "various", "track")
+            val unknownList = listOf("unknown", "download", "original artist", "various", "track", "downlo")
             val isTitleValid = !metaTitle.isNullOrBlank() && unknownList.none { metaTitle.equals(it, ignoreCase = true) } && !metaTitle.contains(".mp3")
             val isArtistValid = !metaArtist.isNullOrBlank() && unknownList.none { metaArtist.equals(it, ignoreCase = true) }
 
@@ -141,9 +173,11 @@ object AudioFingerprintFixer {
                 val encoded = URLEncoder.encode(query, "UTF-8")
                 val url = URL("$baseUrl?query=$encoded&limit=5")
                 val conn = (url.openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 3500
-                    readTimeout = 3500
-                    setRequestProperty("User-Agent", "SONIQ-Player/0.9.8")
+                    connectTimeout = 4000
+                    readTimeout = 4000
+                    instanceFollowRedirects = true
+                    setRequestProperty("User-Agent", "Mozilla/5.0 (Android; Mobile)")
+                    setRequestProperty("Accept", "application/json")
                 }
                 if (conn.responseCode != 200) continue
 
@@ -169,28 +203,35 @@ object AudioFingerprintFixer {
                     }
 
                     val best = results.getJSONObject(bestIdx)
-                    val title = best.optString("name", query).replace("&quot;", "\"").replace("&#039;", "'").trim()
-                    val artist = best.optJSONObject("artists")
-                        ?.optJSONArray("primary")
-                        ?.optJSONObject(0)
-                        ?.optString("name", "")
-                        ?.ifBlank { null }
-                        ?: best.optString("primaryArtists", "").ifBlank { "Original Artist" }
+                    val title = best.optString("name", "").replace("&quot;", "\"").replace("&#039;", "'").replace("&amp;", "&").trim()
+                    var artist = ""
+
+                    val artistsObj = best.optJSONObject("artists")
+                    if (artistsObj != null) {
+                        val primaryArr = artistsObj.optJSONArray("primary")
+                        if (primaryArr != null && primaryArr.length() > 0) {
+                            artist = primaryArr.getJSONObject(0).optString("name", "")
+                        }
+                    }
+                    if (artist.isBlank()) {
+                        artist = best.optString("primaryArtists", "Various Artists")
+                    }
 
                     val album = best.optJSONObject("album")?.optString("name", "Single") ?: "Single"
+
                     val images = best.optJSONArray("image")
                     val artUrl = if (images != null && images.length() > 0) {
                         images.getJSONObject(images.length() - 1).optString("url", null)
                             ?: images.getJSONObject(images.length() - 1).optString("link", null)
                     } else null
 
-                    if (title.isNotBlank() && artist != "Original Artist") {
+                    if (title.isNotBlank()) {
                         return FingerprintResult(
                             title = title,
-                            artist = artist,
-                            album = album,
+                            artist = artist.ifBlank { "Original Artist" },
+                            album = album.ifBlank { "Single" },
                             albumArtUrl = artUrl,
-                            matchConfidence = if (minDiff < 15000) 0.95f else 0.85f
+                            matchConfidence = 0.90f
                         )
                     }
                 }
@@ -204,10 +245,13 @@ object AudioFingerprintFixer {
     private fun queryItunes(cleanedTitle: String, targetDurationMs: Long): FingerprintResult? {
         return try {
             val encoded = URLEncoder.encode(cleanedTitle, "UTF-8")
-            val url = URL("https://itunes.apple.com/search?term=$encoded&entity=song&limit=6&country=IN")
+            val url = URL("https://itunes.apple.com/search?term=$encoded&entity=song&limit=5&country=IN")
             val conn = (url.openConnection() as HttpURLConnection).apply {
-                connectTimeout = 3000
-                readTimeout = 3000
+                connectTimeout = 4000
+                readTimeout = 4000
+                instanceFollowRedirects = true
+                setRequestProperty("User-Agent", "Mozilla/5.0")
+                setRequestProperty("Accept", "application/json")
             }
             if (conn.responseCode != 200) return null
 
@@ -232,19 +276,19 @@ object AudioFingerprintFixer {
                 }
 
                 val best = results.getJSONObject(bestIndex)
-                val fixedTitle = best.optString("trackName", cleanedTitle).trim()
-                val fixedArtist = best.optString("artistName", "Unknown Artist").trim()
+                val fixedTitle = best.optString("trackName", "").trim()
+                val fixedArtist = best.optString("artistName", "").trim()
                 val fixedAlbum = best.optString("collectionName", "Single").trim()
                 val rawArt = best.optString("artworkUrl100", "")
                 val hdArt = rawArt.replace("100x100bb", "600x600bb").ifBlank { null }
 
-                if (fixedTitle.isNotBlank() && !fixedArtist.contains("unknown", true)) {
+                if (fixedTitle.isNotBlank()) {
                     FingerprintResult(
                         title = fixedTitle,
-                        artist = fixedArtist,
-                        album = fixedAlbum,
+                        artist = fixedArtist.ifBlank { "Original Artist" },
+                        album = fixedAlbum.ifBlank { "Single" },
                         albumArtUrl = hdArt,
-                        matchConfidence = if (minDiff < 20000) 0.92f else 0.75f
+                        matchConfidence = 0.85f
                     )
                 } else null
             } else null
@@ -258,8 +302,10 @@ object AudioFingerprintFixer {
             val destFile = File(context.filesDir, "cover_$songId.jpg")
             val url = URL(urlString)
             val conn = (url.openConnection() as HttpURLConnection).apply {
-                connectTimeout = 4000
-                readTimeout = 4000
+                connectTimeout = 4500
+                readTimeout = 4500
+                instanceFollowRedirects = true
+                setRequestProperty("User-Agent", "Mozilla/5.0")
             }
             if (conn.responseCode == 200) {
                 conn.inputStream.use { input ->
@@ -267,7 +313,7 @@ object AudioFingerprintFixer {
                         input.copyTo(output)
                     }
                 }
-                if (destFile.exists() && destFile.length() > 1024) {
+                if (destFile.exists() && destFile.length() > 512) {
                     Uri.fromFile(destFile).toString()
                 } else null
             } else null
@@ -285,7 +331,7 @@ object AudioFingerprintFixer {
         if (total == 0) return@withContext 0
 
         var fixedCount = 0
-        val semaphore = Semaphore(2)
+        val semaphore = Semaphore(3)
         var completedSoFar = 0
 
         val jobs = unknownList.map { song ->
@@ -299,7 +345,7 @@ object AudioFingerprintFixer {
                         withContext(Dispatchers.Main) {
                             onProgress(completedSoFar, total, song.title)
                         }
-                        if (result.matchConfidence >= 0.70f) {
+                        if (result.matchConfidence >= 0.50f) {
                             withContext(Dispatchers.Main) {
                                 onSongFixed(song, result)
                             }
