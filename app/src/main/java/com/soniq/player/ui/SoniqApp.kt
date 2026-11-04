@@ -178,75 +178,147 @@ fun BouncyIconButton(
 }
 
 @Composable
-fun FloatingMiniPlayer(
-    song: Song,
-    isPlaying: Boolean,
-    progress: Float,
-    primaryColor: Color,
-    secondaryColor: Color,
-    onOpen: () -> Unit,
-    onPlayPause: () -> Unit,
-    onNext: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(62.dp)
-            .clickable { onOpen() },
-        shape = RoundedCornerShape(22.dp),
-        color = Color(0xEE160E2E),
-        border = BorderStroke(1.2.dp, secondaryColor.copy(alpha = 0.55f))
-    ) {
-        Column(Modifier.fillMaxSize()) {
-            LinearProgressIndicator(
-                progress = { progress },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(2.5.dp),
-                color = secondaryColor,
-                trackColor = Color.Transparent
+fun SongThumb(song: Song, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    var embeddedBitmap by remember(song.id, song.albumArtUri) { mutableStateOf<ImageBitmap?>(null) }
+
+    val validFileOverride = remember(song.albumArtUri) {
+        if (!song.albumArtUri.isNullOrBlank() && song.albumArtUri.startsWith("file://")) {
+            val path = Uri.parse(song.albumArtUri).path
+            path != null && File(path).let { it.exists() && it.length() > 512 }
+        } else false
+    }
+
+    val isHttpOverride = remember(song.albumArtUri) {
+        !song.albumArtUri.isNullOrBlank() && song.albumArtUri.startsWith("http")
+    }
+
+    LaunchedEffect(song.id, song.albumArtUri) {
+        if (!validFileOverride && !isHttpOverride) {
+            withContext(Dispatchers.IO) {
+                val bytes = MusicRepository.extractEmbeddedPicture(context, song.uri)
+                if (bytes != null) {
+                    val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    if (bmp != null) {
+                        embeddedBitmap = bmp.asImageBitmap()
+                    }
+                }
+            }
+        }
+    }
+
+    val baseModifier = modifier.aspectRatio(1f)
+
+    if ((validFileOverride || isHttpOverride) && !song.albumArtUri.isNullOrBlank()) {
+        AsyncImage(
+            model = ImageRequest.Builder(context)
+                .data(song.albumArtUri)
+                .crossfade(true)
+                .build(),
+            contentDescription = "Artwork",
+            contentScale = ContentScale.Crop,
+            modifier = baseModifier.clip(RoundedCornerShape(16.dp))
+        )
+    } else if (embeddedBitmap != null) {
+        Image(
+            bitmap = embeddedBitmap!!,
+            contentDescription = "Artwork",
+            contentScale = ContentScale.Crop,
+            modifier = baseModifier.clip(RoundedCornerShape(16.dp))
+        )
+    } else {
+        Box(
+            modifier = baseModifier
+                .background(
+                    Brush.radialGradient(
+                        colors = listOf(Color(0xFF281850), Color(0xFF0F0922))
+                    ),
+                    RoundedCornerShape(16.dp)
+                )
+                .border(1.dp, GlassBorder, RoundedCornerShape(16.dp)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.Default.MusicNote,
+                contentDescription = null,
+                tint = ElectricCyan.copy(alpha = 0.85f),
+                modifier = Modifier.size(36.dp)
             )
-            Row(
-                Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                SongThumb(song = song, modifier = Modifier.size(42.dp))
-                Spacer(Modifier.width(10.dp))
+        }
+    }
+}
+
+@Composable
+fun SongCard(
+    song: Song,
+    favorite: Boolean,
+    onPlay: () -> Unit,
+    onFavorite: () -> Unit,
+    onAddToPlaylist: () -> Unit,
+    onAddToAlbum: () -> Unit,
+    onEdit: () -> Unit
+) {
+    var menuExpanded by remember { mutableStateOf(false) }
+    BouncyButton(onClick = onPlay, modifier = Modifier.fillMaxWidth()) {
+        Surface(
+            color = GlassPill,
+            shape = RoundedCornerShape(20.dp),
+            border = BorderStroke(1.2.dp, GlassBorder),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                SongThumb(song, Modifier.size(48.dp))
+                Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(
-                        song.title,
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        song.artist,
-                        color = MutedLavender,
-                        fontSize = 11.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                    Text(song.title, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("${song.artist} • ${song.album}", color = MutedLavender, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("${song.folder} • ${timeText(song.durationMs)}", color = ElectricCyan.copy(alpha = 0.8f), fontSize = 10.sp)
+                }
+                IconButton(onClick = onFavorite, modifier = Modifier.size(34.dp)) {
+                    Icon(
+                        if (favorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                        null,
+                        tint = if (favorite) Color(0xFFFF5286) else MutedLavender,
+                        modifier = Modifier.size(19.dp)
                     )
                 }
-                IconButton(onClick = onPlayPause) {
-                    Icon(
-                        if (isPlaying) Icons.Default.PauseCircleFilled else Icons.Default.PlayCircleFilled,
-                        contentDescription = "Play/Pause",
-                        tint = secondaryColor,
-                        modifier = Modifier.size(32.dp)
-                    )
+                IconButton(onClick = onEdit, modifier = Modifier.size(34.dp)) {
+                    Icon(Icons.Default.AutoFixHigh, "Auto-Fix", tint = ElectricCyan, modifier = Modifier.size(19.dp))
                 }
-                IconButton(onClick = onNext) {
-                    Icon(
-                        Icons.Default.SkipNext,
-                        contentDescription = "Next",
-                        tint = Color.White,
-                        modifier = Modifier.size(26.dp)
-                    )
+                Box {
+                    IconButton(onClick = { menuExpanded = true }, modifier = Modifier.size(32.dp)) {
+                        Icon(Icons.Default.MoreVert, contentDescription = "More", tint = MutedLavender, modifier = Modifier.size(19.dp))
+                    }
+                    DropdownMenu(
+                        expanded = menuExpanded,
+                        onDismissRequest = { menuExpanded = false },
+                        modifier = Modifier.background(Color(0xFF1E1436))
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Add to Playlist", color = Color.White) },
+                            leadingIcon = { Icon(Icons.Default.PlaylistAdd, null, tint = ElectricCyan) },
+                            onClick = {
+                                menuExpanded = false
+                                onAddToPlaylist()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Add to Custom Album", color = Color.White) },
+                            leadingIcon = { Icon(Icons.Default.Album, null, tint = NeonPurple) },
+                            onClick = {
+                                menuExpanded = false
+                                onAddToAlbum()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Edit Metadata / Auto-Fix", color = Color.White) },
+                            leadingIcon = { Icon(Icons.Default.AutoFixHigh, null, tint = ElectricCyan) },
+                            onClick = {
+                                menuExpanded = false
+                                onEdit()
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -254,57 +326,160 @@ fun FloatingMiniPlayer(
 }
 
 @Composable
-fun FloatingBottomNavBar(
-    currentTab: MainTab,
-    activeColor: Color,
-    onSelect: (MainTab) -> Unit,
-    modifier: Modifier = Modifier
+fun GroupCard(
+    title: String,
+    subtitle: String,
+    icon: ImageVector,
+    representativeSong: Song?,
+    isCustom: Boolean,
+    onClick: () -> Unit
 ) {
-    Surface(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(64.dp),
-        shape = RoundedCornerShape(32.dp),
-        color = Color(0xEE100A24),
-        border = BorderStroke(1.2.dp, GlassBorder)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxSize().padding(horizontal = 6.dp),
-            horizontalArrangement = Arrangement.SpaceAround,
-            verticalAlignment = Alignment.CenterVertically
+    BouncyButton(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
+        Surface(
+            color = GlassPill,
+            shape = RoundedCornerShape(20.dp),
+            border = BorderStroke(1.2.dp, if (isCustom) ElectricCyan.copy(alpha = 0.7f) else GlassBorder),
+            modifier = Modifier.fillMaxWidth()
         ) {
-            MainTab.entries.forEach { tab ->
-                val selected = currentTab == tab
-                val animScale by animateFloatAsState(
-                    targetValue = if (selected) 1.15f else 1f,
-                    animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
-                    label = "tab_scale"
-                )
-                BouncyButton(
-                    onClick = { onSelect(tab) },
-                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.scale(animScale)
+            Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (representativeSong != null) {
+                    SongThumb(song = representativeSong, modifier = Modifier.size(48.dp))
+                } else {
+                    Box(
+                        Modifier
+                            .size(48.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(Brush.linearGradient(listOf(NeonPurple.copy(alpha = 0.5f), ElectricCyan.copy(alpha = 0.5f)))),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Icon(
-                            tab.icon,
-                            contentDescription = tab.label,
-                            tint = if (selected) activeColor else MutedLavender.copy(alpha = 0.5f),
-                            modifier = Modifier.size(22.dp)
-                        )
-                        Text(
-                            tab.label,
-                            color = if (selected) activeColor else MutedLavender.copy(alpha = 0.5f),
-                            fontSize = 9.sp,
-                            maxLines = 1,
-                            softWrap = false,
-                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
-                        )
+                        Icon(icon, null, tint = Color.White)
                     }
                 }
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(title, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (isCustom) {
+                            Spacer(Modifier.width(6.dp))
+                            Surface(shape = RoundedCornerShape(6.dp), color = NeonPurple.copy(alpha = 0.4f)) {
+                                Text("CUSTOM", color = ElectricCyan, fontSize = 9.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
+                            }
+                        }
+                    }
+                    Text(subtitle, color = MutedLavender, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Icon(Icons.Default.ChevronRight, null, tint = ElectricCyan)
             }
+        }
+    }
+}
+
+@Composable
+fun SamsungAlphabetScroller(
+    songs: List<Song>,
+    listState: LazyListState,
+    modifier: Modifier = Modifier
+) {
+    val alphabet = remember { ('A'..'Z').toList() }
+    val scope = rememberCoroutineScope()
+    var activeLetter by remember { mutableStateOf<Char?>(null) }
+    var railHeightPx by remember { mutableFloatStateOf(1f) }
+
+    fun scrollToLetter(letter: Char) {
+        activeLetter = letter
+        val targetIndex = songs.indexOfFirst {
+            it.title.trim().firstOrNull()?.uppercaseChar() == letter
+        }
+        if (targetIndex >= 0) {
+            scope.launch { listState.scrollToItem(targetIndex) }
+        }
+    }
+
+    Box(
+        modifier = modifier
+            .fillMaxHeight()
+            .width(24.dp)
+            .onGloballyPositioned { coordinates ->
+                railHeightPx = coordinates.size.height.toFloat()
+            }
+            .pointerInput(alphabet, songs) {
+                detectTapGestures(
+                    onPress = { offset ->
+                        val itemHeight = size.height.toFloat() / alphabet.size.coerceAtLeast(1)
+                        val index = (offset.y / itemHeight).toInt().coerceIn(0, alphabet.lastIndex)
+                        scrollToLetter(alphabet[index])
+                        tryAwaitRelease()
+                        activeLetter = null
+                    }
+                )
+            }
+            .pointerInput(alphabet, songs) {
+                detectDragGestures(
+                    onDragStart = { offset ->
+                        val itemHeight = railHeightPx / alphabet.size.coerceAtLeast(1)
+                        val index = (offset.y / itemHeight).toInt().coerceIn(0, alphabet.lastIndex)
+                        scrollToLetter(alphabet[index])
+                    },
+                    onDragEnd = { activeLetter = null },
+                    onDragCancel = { activeLetter = null },
+                    onDrag = { change: PointerInputChange, _ ->
+                        change.consume()
+                        val itemHeight = railHeightPx / alphabet.size.coerceAtLeast(1)
+                        val index = (change.position.y / itemHeight).toInt().coerceIn(0, alphabet.lastIndex)
+                        scrollToLetter(alphabet[index])
+                    }
+                )
+            },
+        contentAlignment = Alignment.CenterEnd
+    ) {
+        Column(
+            modifier = Modifier.fillMaxHeight(),
+            verticalArrangement = Arrangement.SpaceBetween,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            alphabet.forEach { letter ->
+                val isSelected = activeLetter == letter
+                Text(
+                    text = letter.toString(),
+                    color = if (isSelected) ElectricCyan else MutedLavender.copy(alpha = 0.5f),
+                    fontSize = 9.sp,
+                    fontWeight = if (isSelected) FontWeight.Black else FontWeight.Normal
+                )
+            }
+        }
+        activeLetter?.let { letter ->
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .offset(x = (-46).dp)
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(Brush.radialGradient(listOf(ElectricCyan, NeonPurple)))
+                    .border(1.5.dp, Color.White, CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = letter.toString(),
+                    color = OLEDBlack,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Black
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun MiniVisualizer(
+    accent1: Color = ElectricCyan,
+    accent2: Color = NeonPurple,
+    modifier: Modifier = Modifier
+) {
+    val amplitudes = RealtimeFftMonitor.amplitudes
+    Row(modifier, horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically) {
+        for (i in 0 until 16) {
+            val h = (amplitudes[i] * 24.dp.value).coerceIn(4f, 26f)
+            Box(Modifier.width(3.dp).height(h.dp).clip(CircleShape).background(Brush.verticalGradient(listOf(accent1, accent2))))
         }
     }
 }
@@ -614,6 +789,92 @@ fun LiveSyncedKaraokeLyrics(
 }
 
 @Composable
+fun TagEditorAndFingerprintDialog(
+    song: Song,
+    onDismiss: () -> Unit,
+    onSave: (String, String, String, String?) -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var title by remember { mutableStateOf(song.title) }
+    var artist by remember { mutableStateOf(song.artist) }
+    var album by remember { mutableStateOf(song.album) }
+    var onlineCoverUri by remember { mutableStateOf<String?>(null) }
+    var isFingerprinting by remember { mutableStateOf(false) }
+    var matchConfidence by remember { mutableFloatStateOf(0f) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Color(0xFF1E1436),
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.AutoFixHigh, null, tint = ElectricCyan)
+                Spacer(Modifier.width(8.dp))
+                Text("Fingerprint & Metadata Fixer", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    label = { Text("Track Title", color = MutedLavender) },
+                    colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White)
+                )
+                OutlinedTextField(
+                    value = artist,
+                    onValueChange = { artist = it },
+                    label = { Text("Artist", color = MutedLavender) },
+                    colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White)
+                )
+                OutlinedTextField(
+                    value = album,
+                    onValueChange = { album = it },
+                    label = { Text("Album", color = MutedLavender) },
+                    colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White)
+                )
+                Button(
+                    onClick = {
+                        scope.launch {
+                            isFingerprinting = true
+                            val fix = AudioFingerprintFixer.autoFixSong(context, song)
+                            if (fix.matchConfidence >= 0.60f) {
+                                title = fix.title
+                                artist = fix.artist
+                                album = fix.album
+                                matchConfidence = fix.matchConfidence
+                                onlineCoverUri = fix.albumArtUrl
+                            } else {
+                                Toast.makeText(context, "No high-confidence match found for this song.", Toast.LENGTH_SHORT).show()
+                            }
+                            isFingerprinting = false
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = DeepViolet),
+                    enabled = !isFingerprinting,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.GraphicEq, null)
+                    Spacer(Modifier.width(6.dp))
+                    Text(if (isFingerprinting) "Analyzing Catalog Match..." else "Magic Audio Fingerprint Fix")
+                }
+                if (matchConfidence > 0f) {
+                    Text("• Confidence Match: ${(matchConfidence * 100).toInt()}% • Verified", color = ElectricCyan, fontSize = 12.sp)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(title.trim(), artist.trim(), album.trim(), onlineCoverUri) }) {
+                Text("Apply & Save", color = ElectricCyan, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel", color = MutedLavender) }
+        }
+    )
+}
+
+@Composable
 fun FullPlayer(
     song: Song,
     isPlaying: Boolean,
@@ -682,6 +943,7 @@ fun FullPlayer(
             )
             Spacer(Modifier.height(6.dp))
 
+            // Navigation Bar
             Row(
                 Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -716,6 +978,7 @@ fun FullPlayer(
 
             Spacer(Modifier.height(6.dp))
 
+            // Mode Selector
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
