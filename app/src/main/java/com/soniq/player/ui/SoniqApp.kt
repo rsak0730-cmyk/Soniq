@@ -62,12 +62,7 @@ import androidx.palette.graphics.Palette
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.google.common.util.concurrent.MoreExecutors
-import com.soniq.player.audio.AudioDeviceMonitor
-import com.soniq.player.audio.AudioEffectsBridge
-import com.soniq.player.audio.AudioFingerprintFixer
-import com.soniq.player.audio.AudioOutput
-import com.soniq.player.audio.GyroscopeParallaxEngine
-import com.soniq.player.audio.RealtimeFftMonitor
+import com.soniq.player.audio.*
 import com.soniq.player.data.*
 import com.soniq.player.playback.PlaybackService
 import kotlinx.coroutines.Dispatchers
@@ -172,6 +167,62 @@ fun BouncyIconButton(
 ) {
     BouncyButton(onClick = onClick, modifier = modifier.size(size)) {
         content()
+    }
+}
+
+@Composable
+fun FloatingBottomNavBar(
+    currentTab: MainTab,
+    activeColor: Color,
+    onSelect: (MainTab) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(64.dp),
+        shape = RoundedCornerShape(32.dp),
+        color = Color(0xEE100A24),
+        border = BorderStroke(1.2.dp, GlassBorder)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxSize().padding(horizontal = 6.dp),
+            horizontalArrangement = Arrangement.SpaceAround,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            MainTab.entries.forEach { tab ->
+                val selected = currentTab == tab
+                val animScale by animateFloatAsState(
+                    targetValue = if (selected) 1.15f else 1f,
+                    animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
+                    label = "tab_scale"
+                )
+                BouncyButton(
+                    onClick = { onSelect(tab) },
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.scale(animScale)
+                    ) {
+                        Icon(
+                            tab.icon,
+                            contentDescription = tab.label,
+                            tint = if (selected) activeColor else MutedLavender.copy(alpha = 0.5f),
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Text(
+                            tab.label,
+                            color = if (selected) activeColor else MutedLavender.copy(alpha = 0.5f),
+                            fontSize = 9.sp,
+                            maxLines = 1,
+                            softWrap = false,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -2332,6 +2383,7 @@ fun FullPlayer(
     onOpenEqualizer: () -> Unit
 ) {
     val context = LocalContext.current
+    val view = LocalView.current
     var showLyrics by remember { mutableStateOf(false) }
     var lyrics by remember { mutableStateOf<List<LyricLine>>(emptyList()) }
     var isLoadingLyrics by remember { mutableStateOf(false) }
@@ -2624,9 +2676,7 @@ fun FullPlayer(
                                         if (angle < 0) angle += 360f
                                         val seekPercent = (angle / 360f).coerceIn(0f, 1f)
                                         onSeek((seekPercent * duration).toLong())
-                                        context.let {
-                                            (it as? ComponentActivity)?.window?.decorView?.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                                        }
+                                        view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                                     }
                                 }
                             }
@@ -2651,9 +2701,7 @@ fun FullPlayer(
                                             val seekPercent = (angle / 360f).coerceIn(0f, 1f)
                                             val targetMs = (seekPercent * duration).toLong()
                                             onSeek(targetMs)
-                                            context.let {
-                                                (it as? ComponentActivity)?.window?.decorView?.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                                            }
+                                            view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                                         }
                                     }
                                 )
