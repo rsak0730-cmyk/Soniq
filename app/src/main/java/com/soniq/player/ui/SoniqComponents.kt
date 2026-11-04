@@ -7,7 +7,6 @@ package com.soniq.player.ui
 
 import android.graphics.BitmapFactory
 import android.net.Uri
-import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
@@ -19,7 +18,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -34,6 +32,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerInputChange
@@ -47,13 +46,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.media3.common.Player
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
-import com.soniq.player.audio.AudioFingerprintFixer
 import com.soniq.player.audio.RealtimeFftMonitor
 import com.soniq.player.data.LyricLine
-import com.soniq.player.data.LyricsEngine
 import com.soniq.player.data.MusicRepository
 import com.soniq.player.data.Song
 import kotlinx.coroutines.Dispatchers
@@ -62,19 +58,25 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import kotlin.math.PI
 import kotlin.math.cos
-import kotlin.math.roundToInt
 import kotlin.math.sin
 
-internal val OLEDBlack = Color(0xFF06040A)
-internal val NeonPurple = Color(0xFF9B6CFF)
-internal val DeepViolet = Color(0xFF6B2BEE)
-internal val ElectricCyan = Color(0xFF53F6FF)
-internal val AquaGlow = Color(0xFF26E0FA)
-internal val MutedLavender = Color(0xFFC7BCE0)
-internal val GlassPill = Color(0x351F143D)
-internal val GlassBorder = Color(0x5553F6FF)
+val OLEDBlack = Color(0xFF040308)
+val NeonPurple = Color(0xFF9B6CFF)
+val DeepViolet = Color(0xFF6B2BEE)
+val ElectricCyan = Color(0xFF53F6FF)
+val AquaGlow = Color(0xFF26E0FA)
+val MutedLavender = Color(0xFFC7BCE0)
+val GlassPill = Color(0x351F143D)
+val GlassBorder = Color(0x5553F6FF)
 
-internal fun timeText(ms: Long): String {
+// Deep Ocean Lock-Screen Color Palette (#18)
+val DeepOceanAbyss = Color(0xFF030A16)
+val OceanNavyDeep = Color(0xFF081C36)
+val BioluminescentCyan = Color(0xFF38E1FF)
+val OceanMistGlass = Color(0x280B2B4D)
+val OceanGlassBorder = Color(0x4438E1FF)
+
+fun timeText(ms: Long): String {
     val s = (ms.coerceAtLeast(0L) / 1000).toInt()
     return "%d:%02d".format(s / 60, s % 60)
 }
@@ -170,7 +172,10 @@ fun SongThumb(song: Song, modifier: Modifier = Modifier) {
     } else {
         Box(
             modifier = baseModifier
-                .background(Brush.radialGradient(listOf(Color(0xFF281850), Color(0xFF0F0922))), RoundedCornerShape(16.dp))
+                .background(
+                    Brush.radialGradient(listOf(Color(0xFF281850), Color(0xFF0F0922))),
+                    RoundedCornerShape(16.dp)
+                )
                 .border(1.dp, GlassBorder, RoundedCornerShape(16.dp)),
             contentAlignment = Alignment.Center
         ) {
@@ -201,14 +206,31 @@ fun SongCard(
                 SongThumb(song, Modifier.size(48.dp))
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(song.title, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text("${song.artist} • ${song.album}", color = MutedLavender, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text("${song.folder} • ${timeText(song.durationMs)}", color = ElectricCyan.copy(alpha = 0.8f), fontSize = 10.sp)
+                    Text(
+                        song.title,
+                        color = Color.White,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 14.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        "${song.artist} •${song.album}",
+                        color = MutedLavender,
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        "${song.folder} •${timeText(song.durationMs)}",
+                        color = ElectricCyan.copy(alpha = 0.8f),
+                        fontSize = 10.sp
+                    )
                 }
                 IconButton(onClick = onFavorite, modifier = Modifier.size(34.dp)) {
                     Icon(
                         if (favorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                        null,
+                        contentDescription = "Favorite",
                         tint = if (favorite) Color(0xFFFF5286) else MutedLavender,
                         modifier = Modifier.size(19.dp)
                     )
@@ -397,10 +419,10 @@ fun FloatingMiniPlayer(
     Surface(
         modifier = modifier
             .fillMaxWidth()
-            .height(62.dp)
+            .height(64.dp)
             .clickable { onOpen() },
         shape = RoundedCornerShape(22.dp),
-        color = Color(0xEE160E2E),
+        color = Color(0xEE140E2A),
         border = BorderStroke(1.2.dp, secondaryColor.copy(alpha = 0.55f))
     ) {
         Column(Modifier.fillMaxSize()) {
@@ -414,7 +436,7 @@ fun FloatingMiniPlayer(
                 Modifier.fillMaxSize().padding(horizontal = 10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                SongThumb(song = song, modifier = Modifier.size(42.dp))
+                SongThumb(song = song, modifier = Modifier.size(44.dp))
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
                     Text(song.title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -425,7 +447,7 @@ fun FloatingMiniPlayer(
                         if (isPlaying) Icons.Default.PauseCircleFilled else Icons.Default.PlayCircleFilled,
                         contentDescription = "Play/Pause",
                         tint = secondaryColor,
-                        modifier = Modifier.size(32.dp)
+                        modifier = Modifier.size(34.dp)
                     )
                 }
                 IconButton(onClick = onNext) {
@@ -551,6 +573,10 @@ fun LiquidWaterWaveBackground(
     }
 }
 
+/**
+ * Premium 3D Rounded-Rectangle Centerpiece Artwork.
+ * Includes subtle perspective shift, soft neon rim lighting, and responsive bottom equalizer bars.
+ */
 @Composable
 fun RoundedRectTimelineCenterpiece(
     song: Song,
@@ -568,12 +594,33 @@ fun RoundedRectTimelineCenterpiece(
         modifier = modifier
             .aspectRatio(1f)
             .graphicsLayer {
-                rotationX = gyroPitch * 10f
-                rotationY = gyroRoll * 10f
-                cameraDistance = 16f * density
+                rotationX = (gyroPitch * 10f).coerceIn(-12f, 12f)
+                rotationY = (gyroRoll * 10f).coerceIn(-12f, 12f)
+                cameraDistance = 18f * density
+                shadowElevation = 24.dp.toPx()
+                shape = RoundedCornerShape(32.dp)
+                clip = false
             },
         contentAlignment = Alignment.Center
     ) {
+        // Outer diffuse neon aura shadow
+        Canvas(modifier = Modifier.fillMaxSize(1.06f)) {
+            drawRoundRect(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        secondaryColor.copy(alpha = if (isPlaying) 0.32f else 0.16f),
+                        primaryColor.copy(alpha = if (isPlaying) 0.18f else 0.08f),
+                        Color.Transparent
+                    ),
+                    center = center,
+                    radius = size.minDimension / 1.7f
+                ),
+                size = size,
+                cornerRadius = CornerRadius(36.dp.toPx(), 36.dp.toPx())
+            )
+        }
+
+        // Base Album Artwork clipped to modern 3D rounded rectangle
         SongThumb(
             song = song,
             modifier = Modifier
@@ -581,38 +628,46 @@ fun RoundedRectTimelineCenterpiece(
                 .clip(RoundedCornerShape(32.dp))
         )
 
+        // Overlay with gradient glass shade & subtle beat-reactive timeline bars
         Canvas(modifier = Modifier.fillMaxSize(0.92f)) {
             val w = size.width
             val h = size.height
             val corner = 32.dp.toPx()
 
+            // Outer Neon Rim
             drawRoundRect(
                 brush = Brush.sweepGradient(
-                    listOf(secondaryColor.copy(alpha = 0.85f), primaryColor.copy(alpha = 0.85f), secondaryColor.copy(alpha = 0.85f))
+                    listOf(
+                        secondaryColor.copy(alpha = 0.90f),
+                        primaryColor.copy(alpha = 0.90f),
+                        secondaryColor.copy(alpha = 0.90f)
+                    )
                 ),
                 size = size,
                 cornerRadius = CornerRadius(corner, corner),
                 style = Stroke(2.5.dp.toPx())
             )
 
+            // Bottom glass scrim so the subtle bars stand out gracefully
             drawRoundRect(
                 brush = Brush.verticalGradient(
-                    0.55f to Color.Transparent,
+                    0.58f to Color.Transparent,
                     1.0f to Color(0xDD0B071A)
                 ),
                 size = size,
                 cornerRadius = CornerRadius(corner, corner)
             )
 
+            // Live Spectrum Bars
             val barWidth = 4.dp.toPx()
             val totalBarsWidth = numBars * barWidth
             val spacing = (w * 0.78f - totalBarsWidth) / (numBars - 1).coerceAtLeast(1)
             val startX = (w * 0.11f)
-            val bottomY = h - 20.dp.toPx()
+            val bottomY = h - 18.dp.toPx()
 
             for (i in 0 until numBars) {
                 val amp = if (isPlaying) amplitudes[i % amplitudes.size] else 0.08f
-                val barHeight = (44.dp.toPx() * amp).coerceIn(4.dp.toPx(), 42.dp.toPx())
+                val barHeight = (44.dp.toPx() * amp).coerceIn(4.dp.toPx(), 40.dp.toPx())
                 val bx = startX + i * (barWidth + spacing)
 
                 drawRoundRect(
@@ -626,31 +681,49 @@ fun RoundedRectTimelineCenterpiece(
     }
 }
 
+/**
+ * Animated Waveform Timeline with subtle sinusoidal wavy line and illuminated neon glowing scrubber head.
+ * Fully interactive for seeking with zero drift or lag.
+ */
 @Composable
 fun WaveformSeekScrubber(
     position: Long,
     duration: Long,
+    isPlaying: Boolean,
     primaryColor: Color,
     secondaryColor: Color,
     onSeek: (Long) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val progress = if (duration > 0) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f
-    val barCount = 38
-    val staticPattern = remember {
-        listOf(
-            0.25f, 0.45f, 0.70f, 0.35f, 0.80f, 0.95f, 0.60f, 0.40f,
-            0.65f, 0.85f, 0.50f, 0.30f, 0.75f, 0.90f, 0.60f, 0.45f,
-            0.85f, 0.70f, 0.55f, 0.40f, 0.65f, 0.80f, 0.95f, 0.50f,
-            0.35f, 0.60f, 0.75f, 0.85f, 0.60f, 0.45f, 0.70f, 0.85f,
-            0.55f, 0.40f, 0.65f, 0.50f, 0.35f, 0.20f
-        )
-    }
+
+    // Soft continuous phase movement along the line (paused gracefully when playback stops)
+    val infiniteTransition = rememberInfiniteTransition(label = "wave_timeline")
+    val phase by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 2f * PI.toFloat(),
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = if (isPlaying) 2800 else 9000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "phase"
+    )
+
+    // Slight micro-breathing glow
+    val glowPulse by infiniteTransition.animateFloat(
+        initialValue = 0.82f,
+        targetValue = 1.18f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1600, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "glow_pulse"
+    )
 
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(48.dp)
+            .height(52.dp)
             .pointerInput(duration) {
                 detectTapGestures { offset ->
                     val pct = (offset.x / size.width.toFloat()).coerceIn(0f, 1f)
@@ -666,30 +739,93 @@ fun WaveformSeekScrubber(
         contentAlignment = Alignment.Center
     ) {
         Canvas(Modifier.fillMaxSize()) {
-            val barWidth = 4.dp.toPx()
-            val spacing = (size.width - (barCount * barWidth)) / (barCount - 1)
-            val midY = size.height / 2f
-            for (i in 0 until barCount) {
-                val heightFraction = staticPattern[i % staticPattern.size]
-                val barHeight = (size.height * 0.75f * heightFraction).coerceAtLeast(6.dp.toPx())
-                val x = i * (barWidth + spacing)
-                val isFilled = (i.toFloat() / barCount) <= progress
-                val brush = if (isFilled) {
-                    Brush.verticalGradient(listOf(secondaryColor, primaryColor))
-                } else {
-                    Brush.verticalGradient(listOf(Color(0x446B2BEE), Color(0x2253F6FF)))
+            val w = size.width
+            val h = size.height
+            val midY = h / 2f
+            val activeX = w * progress
+
+            // 1. Inactive Background Track (Soft translucent rounded line)
+            drawLine(
+                color = Color(0x352B194E),
+                start = Offset(activeX, midY),
+                end = Offset(w, midY),
+                strokeWidth = 3.5.dp.toPx(),
+                cap = StrokeCap.Round
+            )
+
+            // 2. Active Waveform Line (Subtle organic sinusoidal wavy movement along the progress path)
+            if (activeX > 0f) {
+                val wavePath = Path()
+                val steps = (activeX / 3.dp.toPx()).toInt().coerceAtLeast(10)
+                val waveAmplitude = if (isPlaying) 3.5.dp.toPx() else 1.2.dp.toPx()
+                val waveFrequency = 0.045
+
+                for (i in 0..steps) {
+                    val px = (i.toFloat() / steps) * activeX
+                    // Attenuate wave amplitude near zero and near the thumb for natural tapered flow
+                    val taper = sin((i.toFloat() / steps) * PI.toFloat()).coerceIn(0f, 1f)
+                    val py = midY + sin((px * waveFrequency + phase).toDouble()).toFloat() * (waveAmplitude * taper)
+
+                    if (i == 0) wavePath.moveTo(px, py) else wavePath.lineTo(px, py)
                 }
-                drawRoundRect(
-                    brush = brush,
-                    topLeft = Offset(x, midY - barHeight / 2),
-                    size = Size(barWidth, barHeight),
-                    cornerRadius = CornerRadius(4.dp.toPx())
+
+                // Diffuse ambient glow along active waveform
+                drawPath(
+                    path = wavePath,
+                    brush = Brush.horizontalGradient(
+                        colors = listOf(
+                            primaryColor.copy(alpha = 0.35f * glowPulse),
+                            secondaryColor.copy(alpha = 0.55f * glowPulse)
+                        )
+                    ),
+                    style = Stroke(width = 8.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+                )
+
+                // Crisp neon foreground wave line
+                drawPath(
+                    path = wavePath,
+                    brush = Brush.horizontalGradient(
+                        colors = listOf(primaryColor, secondaryColor)
+                    ),
+                    style = Stroke(width = 3.5.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+                )
+
+                // 3. Illuminated Scrubber Head (Neon floating orb with multi-layer radial aura)
+                val headWaveY = midY + sin((activeX * waveFrequency + phase).toDouble()).toFloat() * 1.5.dp.toPx()
+                val headCenter = Offset(activeX, headWaveY)
+
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            secondaryColor.copy(alpha = 0.60f * glowPulse),
+                            primaryColor.copy(alpha = 0.20f),
+                            Color.Transparent
+                        ),
+                        center = headCenter,
+                        radius = 16.dp.toPx()
+                    ),
+                    radius = 16.dp.toPx(),
+                    center = headCenter
+                )
+
+                drawCircle(
+                    color = Color.White,
+                    radius = 5.dp.toPx(),
+                    center = headCenter
+                )
+                drawCircle(
+                    color = secondaryColor,
+                    radius = 3.dp.toPx(),
+                    center = headCenter
                 )
             }
         }
     }
 }
 
+/**
+ * Word-by-word Live Karaoke Sync with illuminating neon cyan glow.
+ */
 @Composable
 fun LiveSyncedKaraokeLyrics(
     lyrics: List<LyricLine>,
@@ -771,441 +907,210 @@ fun LiveSyncedKaraokeLyrics(
     }
 }
 
+/**
+ * Deep Ocean Lock Screen View (#18).
+ * Oceanic bioluminescence with deep navy glassmorphism and fully functional playback controls.
+ */
 @Composable
-fun TagEditorAndFingerprintDialog(
-    song: Song,
-    onDismiss: () -> Unit,
-    onSave: (String, String, String, String?) -> Unit
-) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var title by remember { mutableStateOf(song.title) }
-    var artist by remember { mutableStateOf(song.artist) }
-    var album by remember { mutableStateOf(song.album) }
-    var onlineCoverUri by remember { mutableStateOf<String?>(null) }
-    var isFingerprinting by remember { mutableStateOf(false) }
-    var matchConfidence by remember { mutableFloatStateOf(0f) }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = Color(0xFF1E1436),
-        title = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.AutoFixHigh, null, tint = ElectricCyan)
-                Spacer(Modifier.width(8.dp))
-                Text("Fingerprint & Metadata Fixer", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-            }
-        },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                OutlinedTextField(
-                    value = title,
-                    onValueChange = { title = it },
-                    label = { Text("Track Title", color = MutedLavender) },
-                    colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White)
-                )
-                OutlinedTextField(
-                    value = artist,
-                    onValueChange = { artist = it },
-                    label = { Text("Artist", color = MutedLavender) },
-                    colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White)
-                )
-                OutlinedTextField(
-                    value = album,
-                    onValueChange = { album = it },
-                    label = { Text("Album", color = MutedLavender) },
-                    colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White)
-                )
-                Button(
-                    onClick = {
-                        scope.launch {
-                            isFingerprinting = true
-                            val fix = AudioFingerprintFixer.autoFixSong(context, song)
-                            if (fix.matchConfidence >= 0.60f) {
-                                title = fix.title
-                                artist = fix.artist
-                                album = fix.album
-                                matchConfidence = fix.matchConfidence
-                                onlineCoverUri = fix.albumArtUrl
-                            } else {
-                                Toast.makeText(context, "No high-confidence match found for this song.", Toast.LENGTH_SHORT).show()
-                            }
-                            isFingerprinting = false
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = DeepViolet),
-                    enabled = !isFingerprinting,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Icon(Icons.Default.GraphicEq, null)
-                    Spacer(Modifier.width(6.dp))
-                    Text(if (isFingerprinting) "Analyzing Catalog Match..." else "Magic Audio Fingerprint Fix")
-                }
-                if (matchConfidence > 0f) {
-                    Text("• Confidence Match: ${(matchConfidence * 100).toInt()}% • Verified", color = ElectricCyan, fontSize = 12.sp)
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = { onSave(title.trim(), artist.trim(), album.trim(), onlineCoverUri) }) {
-                Text("Apply & Save", color = ElectricCyan, fontWeight = FontWeight.Bold)
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel", color = MutedLavender) }
-        }
-    )
-}
-
-@Composable
-fun FullPlayer(
+fun DeepOceanLockScreenView(
     song: Song,
     isPlaying: Boolean,
     position: Long,
     duration: Long,
     shuffle: Boolean,
     repeatMode: Int,
-    speedMode: String,
-    slowedSpeedFactor: Float,
-    reverbStrengthFactor: Float,
-    onSlowedSpeedChange: (Float) -> Unit,
-    onReverbStrengthChange: (Float) -> Unit,
-    onSpeedModeChange: (String) -> Unit,
-    isFavorite: Boolean,
-    primaryAccent: Color,
-    secondaryAccent: Color,
     gyroPitch: Float,
     gyroRoll: Float,
-    onClose: () -> Unit,
     onPlayPause: () -> Unit,
     onNext: () -> Unit,
     onPrevious: () -> Unit,
     onSeek: (Long) -> Unit,
     onShuffle: () -> Unit,
     onRepeat: () -> Unit,
-    onToggleFavorite: () -> Unit,
-    onLaunchParty: () -> Unit,
-    onOpenEqualizer: () -> Unit
+    onCloseLockScreen: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    val context = LocalContext.current
-    var showLyrics by remember { mutableStateOf(false) }
-    var lyrics by remember { mutableStateOf<List<LyricLine>>(emptyList()) }
-    var isLoadingLyrics by remember { mutableStateOf(false) }
-
-    LaunchedEffect(song.id, song.title) {
-        isLoadingLyrics = true
-        lyrics = LyricsEngine.loadLyricsForSong(context, song)
-        isLoadingLyrics = false
-    }
+    val infiniteTransition = rememberInfiniteTransition(label = "ocean_underwater")
+    val waveT1 by infiniteTransition.animateFloat(
+        initialValue = 0f, targetValue = 2f * PI.toFloat(),
+        animationSpec = infiniteRepeatable(tween(8000, easing = LinearEasing), RepeatMode.Restart),
+        label = "ocean_wave1"
+    )
 
     Box(
-        Modifier
+        modifier = modifier
             .fillMaxSize()
-            .pointerInput(Unit) { detectTapGestures { } }
+            .background(DeepOceanAbyss)
     ) {
-        LiquidWaterWaveBackground(
-            isPlaying = isPlaying,
-            primaryColor = primaryAccent,
-            secondaryColor = secondaryAccent,
-            pitch = gyroPitch,
-            roll = gyroRoll
-        )
+        // Deep Ocean Animated Gradient & Caustics Canvas
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val w = size.width
+            val h = size.height
+
+            // Base ocean depth gradient
+            drawRect(
+                brush = Brush.verticalGradient(
+                    colors = listOf(DeepOceanAbyss, OceanNavyDeep, DeepOceanAbyss)
+                )
+            )
+
+            // Bioluminescent oceanic bloom
+            val bloomX = w * (0.5f + 0.12f * sin(waveT1.toDouble()).toFloat()) + (gyroRoll * 30f)
+            val bloomY = h * (0.35f + 0.08f * cos(waveT1.toDouble()).toFloat()) + (gyroPitch * 30f)
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        BioluminescentCyan.copy(alpha = if (isPlaying) 0.32f else 0.18f),
+                        OceanNavyDeep.copy(alpha = 0.25f),
+                        Color.Transparent
+                    ),
+                    center = Offset(bloomX, bloomY),
+                    radius = w * 0.75f
+                ),
+                radius = w * 0.75f,
+                center = Offset(bloomX, bloomY)
+            )
+        }
+
         Column(
-            Modifier
+            modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
-                .padding(horizontal = 20.dp, vertical = 8.dp),
+                .padding(horizontal = 24.dp, vertical = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Box(
-                Modifier
-                    .size(width = 44.dp, height = 5.dp)
-                    .clip(CircleShape)
-                    .background(MutedLavender.copy(alpha = 0.45f))
-            )
-            Spacer(Modifier.height(6.dp))
-
+            // Lock Screen Header
             Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    BouncyIconButton(onClick = onClose, size = 38.dp) {
-                        Icon(Icons.Default.KeyboardArrowDown, null, tint = Color.White, modifier = Modifier.size(26.dp))
-                    }
-                    Text(
-                        "NOW PLAYING",
-                        color = MutedLavender,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp,
-                        letterSpacing = 1.sp,
-                        maxLines = 1,
-                        softWrap = false
-                    )
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    BouncyIconButton(onClick = onLaunchParty, size = 36.dp) {
-                        Icon(Icons.Default.Headphones, "Party", tint = secondaryAccent, modifier = Modifier.size(20.dp))
-                    }
-                    BouncyIconButton(onClick = { showLyrics = !showLyrics }, size = 36.dp) {
-                        Icon(Icons.Default.Lyrics, "Lyrics", tint = if (showLyrics) secondaryAccent else MutedLavender, modifier = Modifier.size(20.dp))
-                    }
-                    BouncyIconButton(onClick = onOpenEqualizer, size = 36.dp) {
-                        Icon(Icons.Default.Equalizer, "EQ", tint = secondaryAccent, modifier = Modifier.size(20.dp))
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(6.dp))
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                listOf("Normal", "Nightcore", "Slowed").forEach { mode ->
-                    val isSel = speedMode == mode
-                    Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = if (isSel) secondaryAccent.copy(alpha = 0.22f) else Color(0x2218102C),
-                        border = BorderStroke(1.dp, if (isSel) secondaryAccent else Color(0x33C7BCE0)),
-                        modifier = Modifier
-                            .height(32.dp)
-                            .clickable { onSpeedModeChange(mode) }
-                    ) {
-                        Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 12.dp)) {
-                            Text(
-                                text = when (mode) {
-                                    "Nightcore" -> "⚡ 1.25x Nightcore"
-                                    "Slowed" -> "🌌 Slowed + Reverb"
-                                    else -> "1.0x Normal"
-                                },
-                                color = if (isSel) secondaryAccent else MutedLavender,
-                                fontSize = 11.sp,
-                                maxLines = 1,
-                                softWrap = false,
-                                fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal
-                            )
-                        }
-                    }
-                }
-            }
-
-            AnimatedVisibility(visible = speedMode == "Slowed") {
                 Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = Color(0x6618102C),
-                    border = BorderStroke(1.dp, GlassBorder),
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+                    color = OceanMistGlass,
+                    shape = RoundedCornerShape(20.dp),
+                    border = BorderStroke(1.dp, OceanGlassBorder)
                 ) {
-                    Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("Slowed Speed", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                IconButton(
-                                    onClick = { onSlowedSpeedChange((slowedSpeedFactor - 0.05f).coerceIn(0.60f, 0.95f)) },
-                                    modifier = Modifier.size(24.dp)
-                                ) {
-                                    Icon(Icons.Default.Remove, null, tint = secondaryAccent, modifier = Modifier.size(16.dp))
-                                }
-                                Text(
-                                    "%.2fx".format(slowedSpeedFactor),
-                                    color = secondaryAccent,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 6.dp)
-                                )
-                                IconButton(
-                                    onClick = { onSlowedSpeedChange((slowedSpeedFactor + 0.05f).coerceIn(0.60f, 0.95f)) },
-                                    modifier = Modifier.size(24.dp)
-                                ) {
-                                    Icon(Icons.Default.Add, null, tint = secondaryAccent, modifier = Modifier.size(16.dp))
-                                }
-                            }
-                        }
-                        Slider(
-                            value = slowedSpeedFactor,
-                            onValueChange = onSlowedSpeedChange,
-                            valueRange = 0.60f..0.95f,
-                            colors = SliderDefaults.colors(thumbColor = secondaryAccent, activeTrackColor = secondaryAccent),
-                            modifier = Modifier.height(24.dp)
-                        )
-
-                        Spacer(Modifier.height(4.dp))
-
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("Reverb Level", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                IconButton(
-                                    onClick = { onReverbStrengthChange((reverbStrengthFactor - 0.10f).coerceIn(0f, 1f)) },
-                                    modifier = Modifier.size(24.dp)
-                                ) {
-                                    Icon(Icons.Default.Remove, null, tint = primaryAccent, modifier = Modifier.size(16.dp))
-                                }
-                                Text(
-                                    "${(reverbStrengthFactor * 100).roundToInt()}%",
-                                    color = primaryAccent,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 6.dp)
-                                )
-                                IconButton(
-                                    onClick = { onReverbStrengthChange((reverbStrengthFactor + 0.10f).coerceIn(0f, 1f)) },
-                                    modifier = Modifier.size(24.dp)
-                                ) {
-                                    Icon(Icons.Default.Add, null, tint = primaryAccent, modifier = Modifier.size(16.dp))
-                                }
-                            }
-                        }
-                        Slider(
-                            value = reverbStrengthFactor,
-                            onValueChange = onReverbStrengthChange,
-                            valueRange = 0.0f..1.0f,
-                            colors = SliderDefaults.colors(thumbColor = primaryAccent, activeTrackColor = primaryAccent),
-                            modifier = Modifier.height(24.dp)
-                        )
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.Lock, null, tint = BioluminescentCyan, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("DEEP OCEAN #18", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
                     }
                 }
-            }
 
-            Spacer(Modifier.height(6.dp))
-
-            if (showLyrics) {
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(26.dp))
-                        .background(Color(0x6618102C))
-                        .border(1.5.dp, GlassBorder, RoundedCornerShape(26.dp))
-                        .padding(18.dp)
-                ) {
-                    if (isLoadingLyrics) {
-                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator(color = secondaryAccent)
-                        }
-                    } else if (lyrics.isEmpty()) {
-                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text(
-                                "No synchronized lyrics found for '${song.title}'.\nAuto-fix the song title to match online databases.",
-                                color = MutedLavender,
-                                fontSize = 13.sp,
-                                textAlign = TextAlign.Center
-                            )
-                        }
-                    } else {
-                        LiveSyncedKaraokeLyrics(
-                            lyrics = lyrics,
-                            positionMs = position,
-                            activeColor = secondaryAccent,
-                            onSeek = onSeek
-                        )
-                    }
-                }
-            } else {
-                Box(
-                    Modifier.weight(1f).fillMaxWidth(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    RoundedRectTimelineCenterpiece(
-                        song = song,
-                        isPlaying = isPlaying,
-                        primaryColor = primaryAccent,
-                        secondaryColor = secondaryAccent,
-                        gyroPitch = gyroPitch,
-                        gyroRoll = gyroRoll,
-                        modifier = Modifier.size(220.dp)
-                    )
+                BouncyIconButton(onClick = onCloseLockScreen, size = 36.dp) {
+                    Icon(Icons.Default.LockOpen, "Unlock", tint = BioluminescentCyan, modifier = Modifier.size(20.dp))
                 }
             }
 
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.weight(0.6f))
 
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text(song.title, color = Color.White, fontSize = 19.sp, fontWeight = FontWeight.Black, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text("${song.artist} • ${song.album}", color = MutedLavender, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-                IconButton(onClick = onToggleFavorite) {
-                    Icon(
-                        if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                        contentDescription = "Favorite",
-                        tint = if (isFavorite) Color(0xFFFF5286) else MutedLavender
-                    )
-                }
-            }
+            // Oceanic Floating 3D Artwork
+            RoundedRectTimelineCenterpiece(
+                song = song,
+                isPlaying = isPlaying,
+                primaryColor = OceanNavyDeep,
+                secondaryColor = BioluminescentCyan,
+                gyroPitch = gyroPitch,
+                gyroRoll = gyroRoll,
+                modifier = Modifier.size(240.dp)
+            )
 
+            Spacer(Modifier.height(24.dp))
+
+            // Song Typography
+            Text(
+                song.title,
+                color = Color.White,
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Black,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth()
+            )
             Spacer(Modifier.height(4.dp))
+            Text(
+                "${song.artist} • ${song.album}",
+                color = MutedLavender.copy(alpha = 0.85f),
+                fontSize = 13.sp,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth()
+            )
 
+            Spacer(Modifier.weight(0.8f))
+
+            // Wavy Oceanic Timeline
             WaveformSeekScrubber(
                 position = position,
                 duration = duration,
-                primaryColor = primaryAccent,
-                secondaryColor = secondaryAccent,
+                isPlaying = isPlaying,
+                primaryColor = OceanNavyDeep,
+                secondaryColor = BioluminescentCyan,
                 onSeek = onSeek
             )
+
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text(timeText(position), color = MutedLavender, fontSize = 11.sp)
                 Text(timeText(duration), color = MutedLavender, fontSize = 11.sp)
             }
 
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(16.dp))
 
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically
+            // Ocean Glassmorphic Playback Controls
+            Surface(
+                color = OceanMistGlass,
+                shape = RoundedCornerShape(32.dp),
+                border = BorderStroke(1.2.dp, OceanGlassBorder),
+                modifier = Modifier.fillMaxWidth()
             ) {
-                BouncyIconButton(onClick = onShuffle) {
-                    Icon(Icons.Default.Shuffle, null, tint = if (shuffle) secondaryAccent else MutedLavender)
-                }
-                BouncyIconButton(onClick = onPrevious) {
-                    Icon(Icons.Default.SkipPrevious, null, tint = Color.White, modifier = Modifier.size(36.dp))
-                }
-                BouncyButton(onClick = onPlayPause, modifier = Modifier.size(66.dp)) {
-                    Surface(
-                        shape = CircleShape,
-                        color = primaryAccent,
-                        border = BorderStroke(2.5.dp, secondaryAccent),
-                        modifier = Modifier.fillMaxSize()
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                null,
-                                tint = Color.White,
-                                modifier = Modifier.size(36.dp)
-                            )
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    BouncyIconButton(onClick = onShuffle) {
+                        Icon(Icons.Default.Shuffle, null, tint = if (shuffle) BioluminescentCyan else MutedLavender)
+                    }
+                    BouncyIconButton(onClick = onPrevious) {
+                        Icon(Icons.Default.SkipPrevious, null, tint = Color.White, modifier = Modifier.size(34.dp))
+                    }
+                    BouncyButton(onClick = onPlayPause, modifier = Modifier.size(62.dp)) {
+                        Surface(
+                            shape = CircleShape,
+                            color = BioluminescentCyan,
+                            border = BorderStroke(2.dp, Color.White),
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                    null,
+                                    tint = DeepOceanAbyss,
+                                    modifier = Modifier.size(34.dp)
+                                )
+                            }
                         }
                     }
-                }
-                BouncyIconButton(onClick = onNext) {
-                    Icon(Icons.Default.SkipNext, null, tint = Color.White, modifier = Modifier.size(36.dp))
-                }
-                BouncyIconButton(onClick = onRepeat) {
-                    Icon(
-                        if (repeatMode == Player.REPEAT_MODE_ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
-                        null,
-                        tint = if (repeatMode != Player.REPEAT_MODE_OFF) secondaryAccent else MutedLavender
-                    )
+                    BouncyIconButton(onClick = onNext) {
+                        Icon(Icons.Default.SkipNext, null, tint = Color.White, modifier = Modifier.size(34.dp))
+                    }
+                    BouncyIconButton(onClick = onRepeat) {
+                        Icon(
+                            if (repeatMode == Player.REPEAT_MODE_ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
+                            null,
+                            tint = if (repeatMode != Player.REPEAT_MODE_OFF) BioluminescentCyan else MutedLavender
+                        )
+                    }
                 }
             }
-            Spacer(Modifier.height(6.dp))
+
+            Spacer(Modifier.height(12.dp))
         }
     }
 }

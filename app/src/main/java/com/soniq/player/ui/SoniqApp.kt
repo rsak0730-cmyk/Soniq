@@ -22,6 +22,7 @@ import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -57,48 +58,6 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import kotlin.math.roundToInt
 
-enum class MainTab(val label: String, val icon: ImageVector) {
-    HOME("Home", Icons.Default.Home),
-    LIBRARY("Library", Icons.Default.LibraryMusic),
-    EQUALIZER("Equalizer", Icons.Default.Equalizer),
-    PLAYLISTS("Playlists", Icons.Default.QueueMusic),
-    SETTINGS("Settings", Icons.Default.Settings)
-}
-
-private fun applySavedMetadataOverrides(rawSongs: List<Song>, prefs: SharedPreferences): List<Song> {
-    val overridesJson = prefs.getString("song_overrides", null) ?: return rawSongs
-    return runCatching {
-        val root = JSONObject(overridesJson)
-        rawSongs.map { song ->
-            val key = song.id.toString()
-            if (root.has(key)) {
-                val obj = root.getJSONObject(key)
-                song.copy(
-                    title = obj.optString("title", song.title),
-                    artist = obj.optString("artist", song.artist),
-                    album = obj.optString("album", song.album),
-                    albumArtUri = obj.optString("art", "").ifBlank { song.albumArtUri }
-                )
-            } else song
-        }
-    }.getOrDefault(rawSongs)
-}
-
-private fun saveMetadataOverride(prefs: SharedPreferences, songId: Long, title: String, artist: String, album: String, artUri: String?) {
-    runCatching {
-        val raw = prefs.getString("song_overrides", "{}") ?: "{}"
-        val root = JSONObject(raw)
-        val entry = JSONObject().apply {
-            put("title", title)
-            put("artist", artist)
-            put("album", album)
-            if (!artUri.isNullOrBlank()) put("art", artUri)
-        }
-        root.put(songId.toString(), entry)
-        prefs.edit().putString("song_overrides", root.toString()).apply()
-    }
-}
-
 @Composable
 fun SoniqApp() {
     val context = LocalContext.current
@@ -115,6 +74,8 @@ fun SoniqApp() {
     var shuffle by remember { mutableStateOf(false) }
     var repeatMode by remember { mutableIntStateOf(Player.REPEAT_MODE_OFF) }
     var showPlayer by remember { mutableStateOf(false) }
+    var showDeepOceanLockScreen by remember { mutableStateOf(false) }
+
     var dynamicPrimaryColor by remember { mutableStateOf(NeonPurple) }
     var dynamicSecondaryColor by remember { mutableStateOf(ElectricCyan) }
     var outputs by remember { mutableStateOf<List<AudioOutput>>(emptyList()) }
@@ -162,8 +123,9 @@ fun SoniqApp() {
         onDispose { gyroEngine.stop() }
     }
 
-    BackHandler(enabled = showPlayer || selectedFilterKey != null || currentTab != MainTab.HOME) {
+    BackHandler(enabled = showDeepOceanLockScreen || showPlayer || selectedFilterKey != null || currentTab != MainTab.HOME) {
         when {
+            showDeepOceanLockScreen -> showDeepOceanLockScreen = false
             showPlayer -> showPlayer = false
             selectedFilterKey != null -> selectedFilterKey = null
             currentTab != MainTab.HOME -> currentTab = MainTab.HOME
@@ -398,6 +360,7 @@ fun SoniqApp() {
                     .padding(bottom = bottomPadding)
                     .padding(horizontal = 16.dp)
             ) {
+                // Header
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -431,6 +394,7 @@ fun SoniqApp() {
                     }
                 }
 
+                // Search Bar
                 AnimatedVisibility(visible = currentTab == MainTab.HOME || currentTab == MainTab.LIBRARY) {
                     Column {
                         OutlinedTextField(
@@ -628,7 +592,7 @@ fun SoniqApp() {
                     .padding(horizontal = 16.dp, vertical = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                if (currentSong != null && !showPlayer) {
+                if (currentSong != null && !showPlayer && !showDeepOceanLockScreen) {
                     FloatingMiniPlayer(
                         song = currentSong!!,
                         isPlaying = isPlaying,
@@ -647,7 +611,8 @@ fun SoniqApp() {
                 )
             }
 
-            if (showPlayer && currentSong != null) {
+            // Main Now Playing Screen
+            if (showPlayer && currentSong != null && !showDeepOceanLockScreen) {
                 val animatedOffsetY by animateFloatAsState(
                     targetValue = playerOffsetY,
                     animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMedium),
@@ -697,6 +662,7 @@ fun SoniqApp() {
                         gyroPitch = gyroEngine.pitch,
                         gyroRoll = gyroEngine.roll,
                         onClose = { showPlayer = false },
+                        onOpenLockScreen = { showDeepOceanLockScreen = true },
                         onPlayPause = { controller?.let { if (it.isPlaying) it.pause() else it.play() } },
                         onNext = { controller?.seekToNextMediaItem() },
                         onPrevious = { controller?.seekToPreviousMediaItem() },
@@ -722,6 +688,34 @@ fun SoniqApp() {
                         }
                     )
                 }
+            }
+
+            // Deep Ocean Lock-Screen Player Overlay
+            if (showDeepOceanLockScreen && currentSong != null) {
+                DeepOceanLockScreenView(
+                    song = currentSong!!,
+                    isPlaying = isPlaying,
+                    position = position,
+                    duration = duration,
+                    shuffle = shuffle,
+                    repeatMode = repeatMode,
+                    gyroPitch = gyroEngine.pitch,
+                    gyroRoll = gyroEngine.roll,
+                    onPlayPause = { controller?.let { if (it.isPlaying) it.pause() else it.play() } },
+                    onNext = { controller?.seekToNextMediaItem() },
+                    onPrevious = { controller?.seekToPreviousMediaItem() },
+                    onSeek = { controller?.seekTo(it) },
+                    onShuffle = { shuffle = !shuffle; controller?.shuffleModeEnabled = shuffle },
+                    onRepeat = {
+                        repeatMode = when (repeatMode) {
+                            Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
+                            Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+                            else -> Player.REPEAT_MODE_OFF
+                        }
+                        controller?.repeatMode = repeatMode
+                    },
+                    onCloseLockScreen = { showDeepOceanLockScreen = false }
+                )
             }
 
             duplicateGroups?.let { groups ->
@@ -953,6 +947,369 @@ fun SoniqApp() {
                     }
                 )
             }
+        }
+    }
+}
+
+@Composable
+fun FullPlayer(
+    song: Song,
+    isPlaying: Boolean,
+    position: Long,
+    duration: Long,
+    shuffle: Boolean,
+    repeatMode: Int,
+    speedMode: String,
+    slowedSpeedFactor: Float,
+    reverbStrengthFactor: Float,
+    onSlowedSpeedChange: (Float) -> Unit,
+    onReverbStrengthChange: (Float) -> Unit,
+    onSpeedModeChange: (String) -> Unit,
+    isFavorite: Boolean,
+    primaryAccent: Color,
+    secondaryAccent: Color,
+    gyroPitch: Float,
+    gyroRoll: Float,
+    onClose: () -> Unit,
+    onOpenLockScreen: () -> Unit,
+    onPlayPause: () -> Unit,
+    onNext: () -> Unit,
+    onPrevious: () -> Unit,
+    onSeek: (Long) -> Unit,
+    onShuffle: () -> Unit,
+    onRepeat: () -> Unit,
+    onToggleFavorite: () -> Unit,
+    onLaunchParty: () -> Unit,
+    onOpenEqualizer: () -> Unit
+) {
+    val context = LocalContext.current
+    var showLyrics by remember { mutableStateOf(false) }
+    var lyrics by remember { mutableStateOf<List<LyricLine>>(emptyList()) }
+    var isLoadingLyrics by remember { mutableStateOf(false) }
+
+    LaunchedEffect(song.id, song.title) {
+        isLoadingLyrics = true
+        lyrics = LyricsEngine.loadLyricsForSong(context, song)
+        isLoadingLyrics = false
+    }
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .pointerInput(Unit) { detectTapGestures { } }
+    ) {
+        LiquidWaterWaveBackground(
+            isPlaying = isPlaying,
+            primaryColor = primaryAccent,
+            secondaryColor = secondaryAccent,
+            pitch = gyroPitch,
+            roll = gyroRoll
+        )
+        Column(
+            Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .padding(horizontal = 20.dp, vertical = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Box(
+                Modifier
+                    .size(width = 44.dp, height = 5.dp)
+                    .clip(CircleShape)
+                    .background(MutedLavender.copy(alpha = 0.45f))
+            )
+            Spacer(Modifier.height(6.dp))
+
+            // Navigation Bar
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    BouncyIconButton(onClick = onClose, size = 38.dp) {
+                        Icon(Icons.Default.KeyboardArrowDown, null, tint = Color.White, modifier = Modifier.size(26.dp))
+                    }
+                    Text(
+                        "NOW PLAYING",
+                        color = MutedLavender,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        letterSpacing = 1.sp,
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // Deep Ocean Lock-Screen Button
+                    BouncyIconButton(onClick = onOpenLockScreen, size = 36.dp) {
+                        Icon(Icons.Default.Lock, "Lock Screen", tint = BioluminescentCyan, modifier = Modifier.size(20.dp))
+                    }
+                    BouncyIconButton(onClick = onLaunchParty, size = 36.dp) {
+                        Icon(Icons.Default.Headphones, "Party", tint = secondaryAccent, modifier = Modifier.size(20.dp))
+                    }
+                    BouncyIconButton(onClick = { showLyrics = !showLyrics }, size = 36.dp) {
+                        Icon(Icons.Default.Lyrics, "Lyrics", tint = if (showLyrics) secondaryAccent else MutedLavender, modifier = Modifier.size(20.dp))
+                    }
+                    BouncyIconButton(onClick = onOpenEqualizer, size = 36.dp) {
+                        Icon(Icons.Default.Equalizer, "EQ", tint = secondaryAccent, modifier = Modifier.size(20.dp))
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(6.dp))
+
+            // Mode Selector
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                listOf("Normal", "Nightcore", "Slowed").forEach { mode ->
+                    val isSel = speedMode == mode
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = if (isSel) secondaryAccent.copy(alpha = 0.22f) else Color(0x2218102C),
+                        border = BorderStroke(1.dp, if (isSel) secondaryAccent else Color(0x33C7BCE0)),
+                        modifier = Modifier
+                            .height(32.dp)
+                            .clickable { onSpeedModeChange(mode) }
+                    ) {
+                        Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 12.dp)) {
+                            Text(
+                                text = when (mode) {
+                                    "Nightcore" -> "⚡ 1.25x Nightcore"
+                                    "Slowed" -> "🌌 Slowed + Reverb"
+                                    else -> "1.0x Normal"
+                                },
+                                color = if (isSel) secondaryAccent else MutedLavender,
+                                fontSize = 11.sp,
+                                maxLines = 1,
+                                softWrap = false,
+                                fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal
+                            )
+                        }
+                    }
+                }
+            }
+
+            AnimatedVisibility(visible = speedMode == "Slowed") {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = Color(0x6618102C),
+                    border = BorderStroke(1.dp, GlassBorder),
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+                ) {
+                    Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("Slowed Speed", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(
+                                    onClick = { onSlowedSpeedChange((slowedSpeedFactor - 0.05f).coerceIn(0.60f, 0.95f)) },
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(Icons.Default.Remove, null, tint = secondaryAccent, modifier = Modifier.size(16.dp))
+                                }
+                                Text(
+                                    "%.2fx".format(slowedSpeedFactor),
+                                    color = secondaryAccent,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 6.dp)
+                                )
+                                IconButton(
+                                    onClick = { onSlowedSpeedChange((slowedSpeedFactor + 0.05f).coerceIn(0.60f, 0.95f)) },
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(Icons.Default.Add, null, tint = secondaryAccent, modifier = Modifier.size(16.dp))
+                                }
+                            }
+                        }
+                        Slider(
+                            value = slowedSpeedFactor,
+                            onValueChange = onSlowedSpeedChange,
+                            valueRange = 0.60f..0.95f,
+                            colors = SliderDefaults.colors(thumbColor = secondaryAccent, activeTrackColor = secondaryAccent),
+                            modifier = Modifier.height(24.dp)
+                        )
+
+                        Spacer(Modifier.height(4.dp))
+
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("Reverb Level", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(
+                                    onClick = { onReverbStrengthChange((reverbStrengthFactor - 0.10f).coerceIn(0f, 1f)) },
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(Icons.Default.Remove, null, tint = primaryAccent, modifier = Modifier.size(16.dp))
+                                }
+                                Text(
+                                    "${(reverbStrengthFactor * 100).roundToInt()}%",
+                                    color = primaryAccent,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 6.dp)
+                                )
+                                IconButton(
+                                    onClick = { onReverbStrengthChange((reverbStrengthFactor + 0.10f).coerceIn(0f, 1f)) },
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(Icons.Default.Add, null, tint = primaryAccent, modifier = Modifier.size(16.dp))
+                                }
+                            }
+                        }
+                        Slider(
+                            value = reverbStrengthFactor,
+                            onValueChange = onReverbStrengthChange,
+                            valueRange = 0.0f..1.0f,
+                            colors = SliderDefaults.colors(thumbColor = primaryAccent, activeTrackColor = primaryAccent),
+                            modifier = Modifier.height(24.dp)
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(6.dp))
+
+            if (showLyrics) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(26.dp))
+                        .background(Color(0x6618102C))
+                        .border(1.5.dp, GlassBorder, RoundedCornerShape(26.dp))
+                        .padding(18.dp)
+                ) {
+                    if (isLoadingLyrics) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(color = secondaryAccent)
+                        }
+                    } else if (lyrics.isEmpty()) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text(
+                                "No synchronized lyrics found for '${song.title}'.\nAuto-fix the song title to match online databases.",
+                                color = MutedLavender,
+                                fontSize = 13.sp,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    } else {
+                        LiveSyncedKaraokeLyrics(
+                            lyrics = lyrics,
+                            positionMs = position,
+                            activeColor = secondaryAccent,
+                            onSeek = onSeek
+                        )
+                    }
+                }
+            } else {
+                Box(
+                    Modifier.weight(1f).fillMaxWidth(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    // True 3D Rounded Rectangle Centerpiece
+                    RoundedRectTimelineCenterpiece(
+                        song = song,
+                        isPlaying = isPlaying,
+                        primaryColor = primaryAccent,
+                        secondaryColor = secondaryAccent,
+                        gyroPitch = gyroPitch,
+                        gyroRoll = gyroRoll,
+                        modifier = Modifier.size(220.dp)
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(6.dp))
+
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(song.title, color = Color.White, fontSize = 19.sp, fontWeight = FontWeight.Black, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("${song.artist} • ${song.album}", color = MutedLavender, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                IconButton(onClick = onToggleFavorite) {
+                    Icon(
+                        if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                        contentDescription = "Favorite",
+                        tint = if (isFavorite) Color(0xFFFF5286) else MutedLavender
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(4.dp))
+
+            // Subtle Sinusoidal Wavy Animated Timeline
+            WaveformSeekScrubber(
+                position = position,
+                duration = duration,
+                isPlaying = isPlaying,
+                primaryColor = primaryAccent,
+                secondaryColor = secondaryAccent,
+                onSeek = onSeek
+            )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(timeText(position), color = MutedLavender, fontSize = 11.sp)
+                Text(timeText(duration), color = MutedLavender, fontSize = 11.sp)
+            }
+
+            Spacer(Modifier.height(6.dp))
+
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                BouncyIconButton(onClick = onShuffle) {
+                    Icon(Icons.Default.Shuffle, null, tint = if (shuffle) secondaryAccent else MutedLavender)
+                }
+                BouncyIconButton(onClick = onPrevious) {
+                    Icon(Icons.Default.SkipPrevious, null, tint = Color.White, modifier = Modifier.size(36.dp))
+                }
+                BouncyButton(onClick = onPlayPause, modifier = Modifier.size(66.dp)) {
+                    Surface(
+                        shape = CircleShape,
+                        color = primaryAccent,
+                        border = BorderStroke(2.5.dp, secondaryAccent),
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                null,
+                                tint = Color.White,
+                                modifier = Modifier.size(36.dp)
+                            )
+                        }
+                    }
+                }
+                BouncyIconButton(onClick = onNext) {
+                    Icon(Icons.Default.SkipNext, null, tint = Color.White, modifier = Modifier.size(36.dp))
+                }
+                BouncyIconButton(onClick = onRepeat) {
+                    Icon(
+                        if (repeatMode == Player.REPEAT_MODE_ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
+                        null,
+                        tint = if (repeatMode != Player.REPEAT_MODE_OFF) secondaryAccent else MutedLavender
+                    )
+                }
+            }
+            Spacer(Modifier.height(6.dp))
         }
     }
 }
