@@ -176,6 +176,82 @@ fun BouncyIconButton(
 }
 
 @Composable
+fun FloatingMiniPlayer(
+    song: Song,
+    isPlaying: Boolean,
+    progress: Float,
+    primaryColor: Color,
+    secondaryColor: Color,
+    onOpen: () -> Unit,
+    onPlayPause: () -> Unit,
+    onNext: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(62.dp)
+            .clickable { onOpen() },
+        shape = RoundedCornerShape(22.dp),
+        color = Color(0xEE160E2E),
+        border = BorderStroke(1.2.dp, secondaryColor.copy(alpha = 0.55f))
+    ) {
+        Column(Modifier.fillMaxSize()) {
+            LinearProgressIndicator(
+                progress = { progress },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(2.5.dp),
+                color = secondaryColor,
+                trackColor = Color.Transparent
+            )
+            Row(
+                Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                SongThumb(song = song, modifier = Modifier.size(42.dp))
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        song.title,
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        song.artist,
+                        color = MutedLavender,
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                IconButton(onClick = onPlayPause) {
+                    Icon(
+                        if (isPlaying) Icons.Default.PauseCircleFilled else Icons.Default.PlayCircleFilled,
+                        contentDescription = "Play/Pause",
+                        tint = secondaryColor,
+                        modifier = Modifier.size(32.dp)
+                    )
+                }
+                IconButton(onClick = onNext) {
+                    Icon(
+                        Icons.Default.SkipNext,
+                        contentDescription = "Next",
+                        tint = Color.White,
+                        modifier = Modifier.size(26.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun SoniqApp() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -1034,62 +1110,6 @@ fun SoniqApp() {
 }
 
 @Composable
-fun FloatingBottomNavBar(
-    currentTab: MainTab,
-    activeColor: Color,
-    onSelect: (MainTab) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(64.dp),
-        shape = RoundedCornerShape(32.dp),
-        color = Color(0xEE100A24),
-        border = BorderStroke(1.2.dp, GlassBorder)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxSize().padding(horizontal = 6.dp),
-            horizontalArrangement = Arrangement.SpaceAround,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            MainTab.entries.forEach { tab ->
-                val selected = currentTab == tab
-                val animScale by animateFloatAsState(
-                    targetValue = if (selected) 1.15f else 1f,
-                    animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
-                    label = "tab_scale"
-                )
-                BouncyButton(
-                    onClick = { onSelect(tab) },
-                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.scale(animScale)
-                    ) {
-                        Icon(
-                            tab.icon,
-                            contentDescription = tab.label,
-                            tint = if (selected) activeColor else MutedLavender.copy(alpha = 0.5f),
-                            modifier = Modifier.size(22.dp)
-                        )
-                        Text(
-                            tab.label,
-                            color = if (selected) activeColor else MutedLavender.copy(alpha = 0.5f),
-                            fontSize = 9.sp,
-                            maxLines = 1,
-                            softWrap = false,
-                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
 fun HomeScreen(
     songs: List<Song>,
     recents: List<String>,
@@ -1654,7 +1674,7 @@ fun SettingsScreen(
                 modifier = Modifier.weight(1f)
             ) {
                 Icon(Icons.Default.Refresh, null, tint = ElectricCyan, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(4.dp))
+                Spacer(Modifier.width(6.dp))
                 Text("Rescan", color = ElectricCyan, fontSize = 12.sp, maxLines = 1)
             }
             Button(
@@ -1663,7 +1683,7 @@ fun SettingsScreen(
                 modifier = Modifier.weight(1f)
             ) {
                 Icon(Icons.Default.AutoFixHigh, null, tint = ElectricCyan, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(4.dp))
+                Spacer(Modifier.width(6.dp))
                 Text("Auto-Fix All", color = Color.White, fontSize = 12.sp, maxLines = 1)
             }
         }
@@ -2312,7 +2332,6 @@ fun FullPlayer(
     onOpenEqualizer: () -> Unit
 ) {
     val context = LocalContext.current
-    val view = LocalView.current
     var showLyrics by remember { mutableStateOf(false) }
     var lyrics by remember { mutableStateOf<List<LyricLine>>(emptyList()) }
     var isLoadingLyrics by remember { mutableStateOf(false) }
@@ -2605,7 +2624,9 @@ fun FullPlayer(
                                         if (angle < 0) angle += 360f
                                         val seekPercent = (angle / 360f).coerceIn(0f, 1f)
                                         onSeek((seekPercent * duration).toLong())
-                                        view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                        context.let {
+                                            (it as? ComponentActivity)?.window?.decorView?.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                        }
                                     }
                                 }
                             }
@@ -2630,7 +2651,9 @@ fun FullPlayer(
                                             val seekPercent = (angle / 360f).coerceIn(0f, 1f)
                                             val targetMs = (seekPercent * duration).toLong()
                                             onSeek(targetMs)
-                                            view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                            context.let {
+                                                (it as? ComponentActivity)?.window?.decorView?.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                            }
                                         }
                                     }
                                 )
