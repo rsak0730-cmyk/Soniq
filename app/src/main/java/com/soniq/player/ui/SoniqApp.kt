@@ -31,7 +31,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.*
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -55,8 +54,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
-import kotlin.math.roundToInt
 
 @Composable
 fun SoniqApp() {
@@ -690,7 +687,7 @@ fun SoniqApp() {
                 }
             }
 
-            // Deep Ocean Lock-Screen Player Overlay
+            // Deep Ocean Lock-Screen View (#18)
             if (showDeepOceanLockScreen && currentSong != null) {
                 DeepOceanLockScreenView(
                     song = currentSong!!,
@@ -1042,7 +1039,6 @@ fun FullPlayer(
                     )
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    // Deep Ocean Lock-Screen Button
                     BouncyIconButton(onClick = onOpenLockScreen, size = 36.dp) {
                         Icon(Icons.Default.Lock, "Lock Screen", tint = BioluminescentCyan, modifier = Modifier.size(20.dp))
                     }
@@ -1060,7 +1056,6 @@ fun FullPlayer(
 
             Spacer(Modifier.height(6.dp))
 
-            // Mode Selector
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1220,7 +1215,6 @@ fun FullPlayer(
                     Modifier.weight(1f).fillMaxWidth(),
                     contentAlignment = Alignment.Center
                 ) {
-                    // True 3D Rounded Rectangle Centerpiece
                     RoundedRectTimelineCenterpiece(
                         song = song,
                         isPlaying = isPlaying,
@@ -1254,7 +1248,6 @@ fun FullPlayer(
 
             Spacer(Modifier.height(4.dp))
 
-            // Subtle Sinusoidal Wavy Animated Timeline
             WaveformSeekScrubber(
                 position = position,
                 duration = duration,

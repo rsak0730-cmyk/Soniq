@@ -5,8 +5,11 @@
 )
 package com.soniq.player.ui
 
+import android.content.Context
+import android.content.SharedPreferences
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
@@ -18,6 +21,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -46,8 +50,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.media3.common.Player
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import com.soniq.player.audio.AudioFingerprintFixer
 import com.soniq.player.audio.RealtimeFftMonitor
 import com.soniq.player.data.LyricLine
 import com.soniq.player.data.MusicRepository
@@ -55,11 +61,13 @@ import com.soniq.player.data.Song
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.io.File
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
 
+// UI Color Palette
 val OLEDBlack = Color(0xFF040308)
 val NeonPurple = Color(0xFF9B6CFF)
 val DeepViolet = Color(0xFF6B2BEE)
@@ -75,6 +83,48 @@ val OceanNavyDeep = Color(0xFF081C36)
 val BioluminescentCyan = Color(0xFF38E1FF)
 val OceanMistGlass = Color(0x280B2B4D)
 val OceanGlassBorder = Color(0x4438E1FF)
+
+enum class MainTab(val label: String, val icon: ImageVector) {
+    HOME("Home", Icons.Default.Home),
+    LIBRARY("Library", Icons.Default.LibraryMusic),
+    EQUALIZER("Equalizer", Icons.Default.Equalizer),
+    PLAYLISTS("Playlists", Icons.Default.QueueMusic),
+    SETTINGS("Settings", Icons.Default.Settings)
+}
+
+fun applySavedMetadataOverrides(rawSongs: List<Song>, prefs: SharedPreferences): List<Song> {
+    val overridesJson = prefs.getString("song_overrides", null) ?: return rawSongs
+    return runCatching {
+        val root = JSONObject(overridesJson)
+        rawSongs.map { song ->
+            val key = song.id.toString()
+            if (root.has(key)) {
+                val obj = root.getJSONObject(key)
+                song.copy(
+                    title = obj.optString("title", song.title),
+                    artist = obj.optString("artist", song.artist),
+                    album = obj.optString("album", song.album),
+                    albumArtUri = obj.optString("art", "").ifBlank { song.albumArtUri }
+                )
+            } else song
+        }
+    }.getOrDefault(rawSongs)
+}
+
+fun saveMetadataOverride(prefs: SharedPreferences, songId: Long, title: String, artist: String, album: String, artUri: String?) {
+    runCatching {
+        val raw = prefs.getString("song_overrides", "{}") ?: "{}"
+        val root = JSONObject(raw)
+        val entry = JSONObject().apply {
+            put("title", title)
+            put("artist", artist)
+            put("album", album)
+            if (!artUri.isNullOrBlank()) put("art", artUri)
+        }
+        root.put(songId.toString(), entry)
+        prefs.edit().putString("song_overrides", root.toString()).apply()
+    }
+}
 
 fun timeText(ms: Long): String {
     val s = (ms.coerceAtLeast(0L) / 1000).toInt()
@@ -215,14 +265,14 @@ fun SongCard(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        "${song.artist} •${song.album}",
+                        "${song.artist} • ${song.album}",
                         color = MutedLavender,
                         fontSize = 11.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        "${song.folder} •${timeText(song.durationMs)}",
+                        "${song.folder} • ${timeText(song.durationMs)}",
                         color = ElectricCyan.copy(alpha = 0.8f),
                         fontSize = 10.sp
                     )
@@ -573,10 +623,6 @@ fun LiquidWaterWaveBackground(
     }
 }
 
-/**
- * Premium 3D Rounded-Rectangle Centerpiece Artwork.
- * Includes subtle perspective shift, soft neon rim lighting, and responsive bottom equalizer bars.
- */
 @Composable
 fun RoundedRectTimelineCenterpiece(
     song: Song,
@@ -603,7 +649,6 @@ fun RoundedRectTimelineCenterpiece(
             },
         contentAlignment = Alignment.Center
     ) {
-        // Outer diffuse neon aura shadow
         Canvas(modifier = Modifier.fillMaxSize(1.06f)) {
             drawRoundRect(
                 brush = Brush.radialGradient(
@@ -620,7 +665,6 @@ fun RoundedRectTimelineCenterpiece(
             )
         }
 
-        // Base Album Artwork clipped to modern 3D rounded rectangle
         SongThumb(
             song = song,
             modifier = Modifier
@@ -628,13 +672,11 @@ fun RoundedRectTimelineCenterpiece(
                 .clip(RoundedCornerShape(32.dp))
         )
 
-        // Overlay with gradient glass shade & subtle beat-reactive timeline bars
         Canvas(modifier = Modifier.fillMaxSize(0.92f)) {
             val w = size.width
             val h = size.height
             val corner = 32.dp.toPx()
 
-            // Outer Neon Rim
             drawRoundRect(
                 brush = Brush.sweepGradient(
                     listOf(
@@ -648,7 +690,6 @@ fun RoundedRectTimelineCenterpiece(
                 style = Stroke(2.5.dp.toPx())
             )
 
-            // Bottom glass scrim so the subtle bars stand out gracefully
             drawRoundRect(
                 brush = Brush.verticalGradient(
                     0.58f to Color.Transparent,
@@ -658,7 +699,6 @@ fun RoundedRectTimelineCenterpiece(
                 cornerRadius = CornerRadius(corner, corner)
             )
 
-            // Live Spectrum Bars
             val barWidth = 4.dp.toPx()
             val totalBarsWidth = numBars * barWidth
             val spacing = (w * 0.78f - totalBarsWidth) / (numBars - 1).coerceAtLeast(1)
@@ -681,10 +721,6 @@ fun RoundedRectTimelineCenterpiece(
     }
 }
 
-/**
- * Animated Waveform Timeline with subtle sinusoidal wavy line and illuminated neon glowing scrubber head.
- * Fully interactive for seeking with zero drift or lag.
- */
 @Composable
 fun WaveformSeekScrubber(
     position: Long,
@@ -697,7 +733,6 @@ fun WaveformSeekScrubber(
 ) {
     val progress = if (duration > 0) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f
 
-    // Soft continuous phase movement along the line (paused gracefully when playback stops)
     val infiniteTransition = rememberInfiniteTransition(label = "wave_timeline")
     val phase by infiniteTransition.animateFloat(
         initialValue = 0f,
@@ -709,7 +744,6 @@ fun WaveformSeekScrubber(
         label = "phase"
     )
 
-    // Slight micro-breathing glow
     val glowPulse by infiniteTransition.animateFloat(
         initialValue = 0.82f,
         targetValue = 1.18f,
@@ -744,7 +778,6 @@ fun WaveformSeekScrubber(
             val midY = h / 2f
             val activeX = w * progress
 
-            // 1. Inactive Background Track (Soft translucent rounded line)
             drawLine(
                 color = Color(0x352B194E),
                 start = Offset(activeX, midY),
@@ -753,7 +786,6 @@ fun WaveformSeekScrubber(
                 cap = StrokeCap.Round
             )
 
-            // 2. Active Waveform Line (Subtle organic sinusoidal wavy movement along the progress path)
             if (activeX > 0f) {
                 val wavePath = Path()
                 val steps = (activeX / 3.dp.toPx()).toInt().coerceAtLeast(10)
@@ -762,14 +794,12 @@ fun WaveformSeekScrubber(
 
                 for (i in 0..steps) {
                     val px = (i.toFloat() / steps) * activeX
-                    // Attenuate wave amplitude near zero and near the thumb for natural tapered flow
                     val taper = sin((i.toFloat() / steps) * PI.toFloat()).coerceIn(0f, 1f)
                     val py = midY + sin((px * waveFrequency + phase).toDouble()).toFloat() * (waveAmplitude * taper)
 
                     if (i == 0) wavePath.moveTo(px, py) else wavePath.lineTo(px, py)
                 }
 
-                // Diffuse ambient glow along active waveform
                 drawPath(
                     path = wavePath,
                     brush = Brush.horizontalGradient(
@@ -781,7 +811,6 @@ fun WaveformSeekScrubber(
                     style = Stroke(width = 8.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
                 )
 
-                // Crisp neon foreground wave line
                 drawPath(
                     path = wavePath,
                     brush = Brush.horizontalGradient(
@@ -790,7 +819,6 @@ fun WaveformSeekScrubber(
                     style = Stroke(width = 3.5.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
                 )
 
-                // 3. Illuminated Scrubber Head (Neon floating orb with multi-layer radial aura)
                 val headWaveY = midY + sin((activeX * waveFrequency + phase).toDouble()).toFloat() * 1.5.dp.toPx()
                 val headCenter = Offset(activeX, headWaveY)
 
@@ -823,9 +851,6 @@ fun WaveformSeekScrubber(
     }
 }
 
-/**
- * Word-by-word Live Karaoke Sync with illuminating neon cyan glow.
- */
 @Composable
 fun LiveSyncedKaraokeLyrics(
     lyrics: List<LyricLine>,
@@ -907,10 +932,92 @@ fun LiveSyncedKaraokeLyrics(
     }
 }
 
-/**
- * Deep Ocean Lock Screen View (#18).
- * Oceanic bioluminescence with deep navy glassmorphism and fully functional playback controls.
- */
+@Composable
+fun TagEditorAndFingerprintDialog(
+    song: Song,
+    onDismiss: () -> Unit,
+    onSave: (String, String, String, String?) -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var title by remember { mutableStateOf(song.title) }
+    var artist by remember { mutableStateOf(song.artist) }
+    var album by remember { mutableStateOf(song.album) }
+    var onlineCoverUri by remember { mutableStateOf<String?>(null) }
+    var isFingerprinting by remember { mutableStateOf(false) }
+    var matchConfidence by remember { mutableFloatStateOf(0f) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Color(0xFF1E1436),
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.AutoFixHigh, null, tint = ElectricCyan)
+                Spacer(Modifier.width(8.dp))
+                Text("Fingerprint & Metadata Fixer", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    label = { Text("Track Title", color = MutedLavender) },
+                    colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White)
+                )
+                OutlinedTextField(
+                    value = artist,
+                    onValueChange = { artist = it },
+                    label = { Text("Artist", color = MutedLavender) },
+                    colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White)
+                )
+                OutlinedTextField(
+                    value = album,
+                    onValueChange = { album = it },
+                    label = { Text("Album", color = MutedLavender) },
+                    colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White)
+                )
+                Button(
+                    onClick = {
+                        scope.launch {
+                            isFingerprinting = true
+                            val fix = AudioFingerprintFixer.autoFixSong(context, song)
+                            if (fix.matchConfidence >= 0.50f) {
+                                title = fix.title
+                                artist = fix.artist
+                                album = fix.album
+                                matchConfidence = fix.matchConfidence
+                                onlineCoverUri = fix.albumArtUrl
+                            } else {
+                                Toast.makeText(context, "No match found for this track.", Toast.LENGTH_SHORT).show()
+                            }
+                            isFingerprinting = false
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = DeepViolet),
+                    enabled = !isFingerprinting,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.GraphicEq, null)
+                    Spacer(Modifier.width(6.dp))
+                    Text(if (isFingerprinting) "Analyzing Catalog Match..." else "Magic Audio Fingerprint Fix")
+                }
+                if (matchConfidence > 0f) {
+                    Text("• Confidence Match: ${(matchConfidence * 100).toInt()}% • Verified", color = ElectricCyan, fontSize = 12.sp)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(title.trim(), artist.trim(), album.trim(), onlineCoverUri) }) {
+                Text("Apply & Save", color = ElectricCyan, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel", color = MutedLavender) }
+        }
+    )
+}
+
 @Composable
 fun DeepOceanLockScreenView(
     song: Song,
@@ -942,19 +1049,16 @@ fun DeepOceanLockScreenView(
             .fillMaxSize()
             .background(DeepOceanAbyss)
     ) {
-        // Deep Ocean Animated Gradient & Caustics Canvas
         Canvas(modifier = Modifier.fillMaxSize()) {
             val w = size.width
             val h = size.height
 
-            // Base ocean depth gradient
             drawRect(
                 brush = Brush.verticalGradient(
                     colors = listOf(DeepOceanAbyss, OceanNavyDeep, DeepOceanAbyss)
                 )
             )
 
-            // Bioluminescent oceanic bloom
             val bloomX = w * (0.5f + 0.12f * sin(waveT1.toDouble()).toFloat()) + (gyroRoll * 30f)
             val bloomY = h * (0.35f + 0.08f * cos(waveT1.toDouble()).toFloat()) + (gyroPitch * 30f)
             drawCircle(
@@ -980,7 +1084,6 @@ fun DeepOceanLockScreenView(
                 .padding(horizontal = 24.dp, vertical = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Lock Screen Header
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -1008,7 +1111,6 @@ fun DeepOceanLockScreenView(
 
             Spacer(Modifier.weight(0.6f))
 
-            // Oceanic Floating 3D Artwork
             RoundedRectTimelineCenterpiece(
                 song = song,
                 isPlaying = isPlaying,
@@ -1021,7 +1123,6 @@ fun DeepOceanLockScreenView(
 
             Spacer(Modifier.height(24.dp))
 
-            // Song Typography
             Text(
                 song.title,
                 color = Color.White,
@@ -1045,7 +1146,6 @@ fun DeepOceanLockScreenView(
 
             Spacer(Modifier.weight(0.8f))
 
-            // Wavy Oceanic Timeline
             WaveformSeekScrubber(
                 position = position,
                 duration = duration,
@@ -1062,7 +1162,6 @@ fun DeepOceanLockScreenView(
 
             Spacer(Modifier.height(16.dp))
 
-            // Ocean Glassmorphic Playback Controls
             Surface(
                 color = OceanMistGlass,
                 shape = RoundedCornerShape(32.dp),
