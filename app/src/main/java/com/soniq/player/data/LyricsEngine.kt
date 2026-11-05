@@ -54,41 +54,34 @@ object LyricsEngine {
 
         val queries = mutableListOf<String>()
 
-        if (cleanTitle.contains(" X ", ignoreCase = true)) {
-            val parts = cleanTitle.split(Regex("""(?i)\s+x\s+"""))
-            val first = cleanForLyricsSearch(parts.firstOrNull().orEmpty())
-            if (first.length >= 3) queries.add(first)
-            val second = cleanForLyricsSearch(parts.getOrNull(1).orEmpty())
-            if (second.length >= 3) queries.add(second)
+        if (cleanTitle.isNotBlank()) {
+            queries.add("$cleanTitle hindi")
+            queries.add("$cleanTitle bollywood")
         }
-
+        
         if (cleanArtist.isNotBlank() && cleanTitle.isNotBlank()) {
             queries.add("$cleanTitle $cleanArtist")
         }
         if (cleanTitle.isNotBlank()) {
             queries.add(cleanTitle)
-            if (cleanTitle.contains("-")) {
-                val mainPart = cleanTitle.split("-").first().trim()
-                if (mainPart.length >= 3) queries.add(mainPart)
-            }
         }
 
         for (query in queries.distinct()) {
-            val found = searchLrcLib(query, song)
+            val found = searchLrcLib(query, song.durationMs)
             if (found.isNotEmpty()) return postProcessWordTimings(found, song.durationMs)
         }
 
         return emptyList()
     }
 
-    private fun searchLrcLib(query: String, song: Song): List<LyricLine> {
-        return try {
+    private fun searchLrcLib(query: String, songDurationMs: Long): List<LyricLine> {
+        try {
             val encoded = URLEncoder.encode(query, "UTF-8")
             val url = URL("https://lrclib.net/api/search?q=$encoded")
             val conn = (url.openConnection() as HttpURLConnection).apply {
                 connectTimeout = 4000
                 readTimeout = 4000
-                setRequestProperty("User-Agent", "SONIQ-Player/0.9.8")
+                setRequestProperty("User-Agent", "SONIQ-Player/1.0")
             }
             if (conn.responseCode != 200) return emptyList()
 
@@ -96,64 +89,66 @@ object LyricsEngine {
             val array = JSONArray(body)
             if (array.length() == 0) return emptyList()
 
-            val expectedTitle = cleanForLyricsSearch(song.title).lowercase()
-            val expectedArtist = cleanForLyricsSearch(song.artist).lowercase()
-            val candidates = (0 until array.length()).map { array.getJSONObject(it) }.mapNotNull { obj ->
-                val candidateTitle = cleanForLyricsSearch(obj.optString("trackName", "")).lowercase()
-                val candidateArtist = cleanForLyricsSearch(obj.optString("artistName", "")).lowercase()
-                val candidateDuration = (obj.optDouble("duration", 0.0) * 1000.0).toLong()
-                var score = when {
-                    candidateTitle == expectedTitle -> 100
-                    candidateTitle.isNotBlank() && expectedTitle.isNotBlank() &&
-                        (candidateTitle.contains(expectedTitle) || expectedTitle.contains(candidateTitle)) -> 45
-                    else -> 0
-                }
-                if (expectedArtist.isNotBlank() && candidateArtist == expectedArtist) score += 80
-                else if (expectedArtist.isNotBlank() && candidateArtist.isNotBlank() &&
-                    (candidateArtist.contains(expectedArtist) || expectedArtist.contains(candidateArtist))) score += 35
-                else if (expectedArtist.isNotBlank() && candidateArtist.isNotBlank()) score -= 35
-                if (candidateDuration > 0L && song.durationMs > 0L) {
-                    val difference = kotlin.math.abs(candidateDuration - song.durationMs)
-                    score += when {
-                        difference <= 3000L -> 50
-                        difference <= 8000L -> 25
-                        difference <= 15000L -> 5
-                        else -> -40
-                    }
-                }
-                val candidateLyrics = obj.optString("syncedLyrics", "")
-                // Prefer Hindi-script results when the provider exposes multiple exact matches.
-                if (candidateLyrics.contains(Regex("""[\u0900-\u097F]"""))) score += 15
-                if (score >= 65) obj to score else null
-            }.sortedByDescending { it.second }.map { it.first }
-
-            for (obj in candidates) {
+            for (i in 0 until array.length()) {
+                val obj = array.getJSONObject(i)
                 val synced = obj.optString("syncedLyrics", "")
                 if (synced.isNotBlank() && synced != "null") {
                     val parsed = synced.lines().mapNotNull { parseLrcLine(it) }.sortedBy { it.timestampMs }
                     if (parsed.isNotEmpty()) return parsed
                 }
             }
-            // Plain lyrics have no timing data. Do not fabricate timestamps or pretend they sync.
 
+            for (i in 0 until array.length()) {
+                val obj = array.getJSONObject(i)
+                val plain = obj.optString("plainLyrics", "")
+                if (plain.isNotBlank() && plain != "null") {
+                    val rawLines = plain.lines().map { it.trim() }.filter { it.isNotBlank() }
+                    if (rawLines.isNotEmpty()) {
+                        val totalDuration = if (songDurationMs > 15_000L) songDurationMs else 180_000L
+                        val stepMs = (totalDuration / (rawLines.size + 1)).coerceAtLeast(2500L)
+                        return rawLines.mapIndexed { idx, text ->
+                            LyricLine(timestampMs = (idx + 1) * stepMs, text = text)
+                        }
+                    }
+                }
+            }
+            return emptyList()
         } catch (_: Exception) {
-            emptyList()
+            return emptyList()
         }
     }
 
-    // Only use per-word timestamps supplied by Enhanced LRC. Never invent evenly spaced
-    // word timings: line-synced lyrics do not contain enough timing data for karaoke accuracy.
-    private fun postProcessWordTimings(lines: List<LyricLine>, totalDurationMs: Long): List<LyricLine> =
-        lines.sortedBy { it.timestampMs }.map { line ->
-            if (line.words.isEmpty()) line else line.copy(
-                words = line.words.map { word ->
-                    word.copy(
-                        startMs = word.startMs.coerceIn(0L, totalDurationMs.coerceAtLeast(0L)),
-                        endMs = word.endMs.coerceIn(word.startMs, totalDurationMs.coerceAtLeast(word.startMs))
-                    )
+    private fun postProcessWordTimings(lines: List<LyricLine>, totalDurationMs: Long): List<LyricLine> {
+        if (lines.isEmpty()) return emptyList()
+        val processed = mutableListOf<LyricLine>()
+
+        for (i in lines.indices) {
+            val current = lines[i]
+            val nextTime = if (i + 1 < lines.size) lines[i + 1].timestampMs else (current.timestampMs + 4000L).coerceAtMost(totalDurationMs)
+            val lineDuration = (nextTime - current.timestampMs).coerceIn(1200L, 8000L)
+
+            val rawWords = current.text.split(Regex("""\s+""")).filter { it.isNotBlank() }
+            if (rawWords.isNotEmpty()) {
+                val totalChars = rawWords.sumOf { it.length }.coerceAtLeast(1)
+                val timePerChar = lineDuration.toFloat() / totalChars
+                
+                var currentMsTracker = current.timestampMs
+                
+                // FIXED: Explicitly define types to prevent compiler inference failures
+                val timedWords: List<TimedWord> = rawWords.map { wText: String ->
+                    val wStart = currentMsTracker
+                    val wDuration = (wText.length * timePerChar).toLong()
+                    val wEnd = wStart + wDuration
+                    currentMsTracker = wEnd
+                    TimedWord(wText, wStart, wEnd)
                 }
-            )
+                processed.add(current.copy(words = timedWords))
+            } else {
+                processed.add(current)
+            }
         }
+        return processed
+    }
 
     private fun loadLocalLrc(context: Context, song: Song): List<LyricLine> {
         val lines = mutableListOf<LyricLine>()
@@ -180,51 +175,22 @@ object LyricsEngine {
 
     private fun parseLrcLine(rawLine: String): LyricLine? {
         val matcher = LRC_PATTERN.matcher(rawLine)
-        if (!matcher.find()) return null
-
-        val min = matcher.group(1)?.toLongOrNull() ?: 0L
-        val sec = matcher.group(2)?.toLongOrNull() ?: 0L
-        val msStr = matcher.group(3) ?: "0"
-        val ms = when (msStr.length) {
-            1 -> msStr.toLong() * 100
-            2 -> msStr.toLong() * 10
-            3 -> msStr.toLong()
-            else -> 0L
-        }
-        val lineTime = (min * 60 + sec) * 1000 + ms
-        val rawText = matcher.group(4)?.trim().orEmpty()
-        if (rawText.isBlank()) return null
-
-        // Enhanced LRC word markers: <mm:ss.xx> immediately before each word.
-        val marker = Regex("""<(\\d{2}):(\\d{2})(?:\\.(\\d{2,3}))?>""")
-        val matches = marker.findAll(rawText).toList()
-        if (matches.isEmpty()) return LyricLine(lineTime, rawText)
-
-        fun markerTime(m: MatchResult): Long {
-            val fraction = m.groupValues[3]
-            val fractionMs = when (fraction.length) {
-                1 -> fraction.toLong() * 100
-                2 -> fraction.toLong() * 10
-                3 -> fraction.toLong()
+        if (matcher.find()) {
+            val min = matcher.group(1)?.toLongOrNull() ?: 0L
+            val sec = matcher.group(2)?.toLongOrNull() ?: 0L
+            val msStr = matcher.group(3) ?: "0"
+            val ms = when (msStr.length) {
+                2 -> msStr.toLong() * 10
+                3 -> msStr.toLong()
                 else -> 0L
             }
-            return (m.groupValues[1].toLong() * 60 + m.groupValues[2].toLong()) * 1000 + fractionMs
-        }
-
-        val words = mutableListOf<TimedWord>()
-        matches.forEachIndexed { index, match ->
-            val wordStart = markerTime(match)
-            val textStart = match.range.last + 1
-            val textEnd = if (index + 1 < matches.size) matches[index + 1].range.first else rawText.length
-            val wordText = rawText.substring(textStart, textEnd).trim()
-            if (wordText.isNotBlank()) {
-                val nextStart = matches.getOrNull(index + 1)?.let(::markerTime)
-                    ?: (wordStart + 650L)
-                words += TimedWord(wordText, wordStart, nextStart.coerceAtLeast(wordStart + 1L))
+            val time = (min * 60 + sec) * 1000 + ms
+            val text = matcher.group(4)?.trim().orEmpty()
+            if (text.isNotBlank()) {
+                return LyricLine(time, text)
             }
         }
-        val cleanText = marker.replace(rawText, "").replace(Regex("""\\s+"""), " ").trim()
-        return LyricLine(lineTime, cleanText.ifBlank { rawText }, words)
+        return null
     }
 
     private fun cacheLyricsToFile(context: Context, songId: Long, lines: List<LyricLine>) {
