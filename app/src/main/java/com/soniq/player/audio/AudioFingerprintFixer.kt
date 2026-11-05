@@ -7,7 +7,6 @@ import com.soniq.player.data.Song
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
-import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
@@ -63,13 +62,11 @@ object AudioFingerprintFixer {
     }
 
     suspend fun autoFixSong(context: Context, song: Song): FingerprintResult = withContext(Dispatchers.IO) {
-        // 1. Embedded Metadata Verification
         val embeddedResult = extractEmbeddedMetadata(context, song)
         if (embeddedResult != null && embeddedResult.matchConfidence >= 0.85f) {
             return@withContext embeddedResult
         }
 
-        // 2. Build Multi-tier Search Queries
         val cleanedTitle = cleanLocalTitle(song.title)
         val queries = mutableListOf<String>()
 
@@ -84,29 +81,25 @@ object AudioFingerprintFixer {
             if (primary.length >= 3) queries.add(primary)
         }
 
-        if (cleanedTitle.isNotBlank()) queries.add(cleanedTitle)
+        if (cleanedTitle.isNotBlank()) {
+            queries.add("$cleanedTitle hindi")
+            queries.add(cleanedTitle)
+        }
 
-        // Add 2-word & 3-word prefixes (e.g., "Andaaz e Karam", "Bol Kaffara Kya", "Dil Ka Jo Haal")
         val words = cleanedTitle.split(" ").filter { it.isNotBlank() }
         if (words.size >= 3) {
             queries.add(words.take(3).joinToString(" "))
         }
-        if (words.size >= 2) {
-            queries.add(words.take(2).joinToString(" "))
-        }
 
-        // 3. Query Catalogs
         for (q in queries.distinct()) {
             if (q.length < 3) continue
 
-            // JioSaavn Gateway
             val saavnMatch = queryJioSaavn(q, song.durationMs)
             if (saavnMatch != null && saavnMatch.matchConfidence >= 0.60f) {
                 val localArt = saavnMatch.albumArtUrl?.let { saveArtworkLocally(context, song.id, it) }
                 return@withContext saavnMatch.copy(albumArtUrl = localArt ?: saavnMatch.albumArtUrl)
             }
 
-            // Apple Music / iTunes Store
             val itunesMatch = queryItunes(q, song.durationMs)
             if (itunesMatch != null && itunesMatch.matchConfidence >= 0.60f) {
                 val localArt = itunesMatch.albumArtUrl?.let { saveArtworkLocally(context, song.id, it) }
@@ -114,7 +107,6 @@ object AudioFingerprintFixer {
             }
         }
 
-        // Cleaned fallback if title had obvious underscores and spam
         if (cleanedTitle.length >= 3) {
             return@withContext FingerprintResult(
                 title = cleanedTitle,
@@ -125,13 +117,7 @@ object AudioFingerprintFixer {
             )
         }
 
-        FingerprintResult(
-            title = song.title,
-            artist = song.artist,
-            album = song.album,
-            albumArtUrl = song.albumArtUri,
-            matchConfidence = 0.0f
-        )
+        FingerprintResult(song.title, song.artist, song.album, song.albumArtUri, 0.0f)
     }
 
     private fun extractEmbeddedMetadata(context: Context, song: Song): FingerprintResult? {
@@ -187,52 +173,64 @@ object AudioFingerprintFixer {
                 val results = dataObj.optJSONArray("results") ?: continue
 
                 if (results.length() > 0) {
-                    var bestIdx = 0
+                    var bestMatch: JSONObject? = null
                     var minDiff = Long.MAX_VALUE
+                    var highestWordScore = 0
+                    
+                    val qWords = query.lowercase().split(Regex("""\s+""")).filter { it.length > 2 }
+
                     for (i in 0 until results.length()) {
                         val item = results.getJSONObject(i)
-                        val durSec = item.optLong("duration", 0L)
-                        val durMs = durSec * 1000L
-                        if (durMs > 0 && targetDurationMs > 0) {
-                            val diff = abs(durMs - targetDurationMs)
-                            if (diff < minDiff) {
-                                minDiff = diff
-                                bestIdx = i
+                        val resultTitle = item.optString("name", "").lowercase()
+                        
+                        // Strict Match Rule: Must contain at least one major word from our query to prevent random identity assignment
+                        val matchCount = qWords.count { resultTitle.contains(it) }
+                        
+                        if (qWords.isEmpty() || matchCount > 0) {
+                            val durSec = item.optLong("duration", 0L)
+                            val durMs = durSec * 1000L
+                            if (durMs > 0 && targetDurationMs > 0) {
+                                val diff = abs(durMs - targetDurationMs)
+                                if (matchCount > highestWordScore || (matchCount == highestWordScore && diff < minDiff)) {
+                                    highestWordScore = matchCount
+                                    minDiff = diff
+                                    bestMatch = item
+                                }
                             }
                         }
                     }
 
-                    val best = results.getJSONObject(bestIdx)
-                    val title = best.optString("name", "").replace("&quot;", "\"").replace("&#039;", "'").replace("&amp;", "&").trim()
-                    var artist = ""
+                    if (bestMatch != null) {
+                        val title = bestMatch.optString("name", "").replace("&quot;", "\"").replace("&#039;", "'").replace("&amp;", "&").trim()
+                        var artist = ""
 
-                    val artistsObj = best.optJSONObject("artists")
-                    if (artistsObj != null) {
-                        val primaryArr = artistsObj.optJSONArray("primary")
-                        if (primaryArr != null && primaryArr.length() > 0) {
-                            artist = primaryArr.getJSONObject(0).optString("name", "")
+                        val artistsObj = bestMatch.optJSONObject("artists")
+                        if (artistsObj != null) {
+                            val primaryArr = artistsObj.optJSONArray("primary")
+                            if (primaryArr != null && primaryArr.length() > 0) {
+                                artist = primaryArr.getJSONObject(0).optString("name", "")
+                            }
                         }
-                    }
-                    if (artist.isBlank()) {
-                        artist = best.optString("primaryArtists", "Various Artists")
-                    }
+                        if (artist.isBlank()) {
+                            artist = bestMatch.optString("primaryArtists", "Various Artists")
+                        }
 
-                    val album = best.optJSONObject("album")?.optString("name", "Single") ?: "Single"
+                        val album = bestMatch.optJSONObject("album")?.optString("name", "Single") ?: "Single"
+                        val images = bestMatch.optJSONArray("image")
+                        val artUrl = if (images != null && images.length() > 0) {
+                            images.getJSONObject(images.length() - 1).optString("url", null)
+                                ?: images.getJSONObject(images.length() - 1).optString("link", null)
+                        } else null
 
-                    val images = best.optJSONArray("image")
-                    val artUrl = if (images != null && images.length() > 0) {
-                        images.getJSONObject(images.length() - 1).optString("url", null)
-                            ?: images.getJSONObject(images.length() - 1).optString("link", null)
-                    } else null
-
-                    if (title.isNotBlank()) {
-                        return FingerprintResult(
-                            title = title,
-                            artist = artist.ifBlank { "Original Artist" },
-                            album = album.ifBlank { "Single" },
-                            albumArtUrl = artUrl,
-                            matchConfidence = 0.90f
-                        )
+                        if (title.isNotBlank()) {
+                            return FingerprintResult(
+                                title = title,
+                                artist = artist.ifBlank { "Original Artist" },
+                                album = album.ifBlank { "Single" },
+                                albumArtUrl = artUrl,
+                                matchConfidence = 0.90f
+                            )
+                        }
                     }
                 }
             } catch (_: Exception) {
@@ -260,38 +258,49 @@ object AudioFingerprintFixer {
             val results = root.optJSONArray("results") ?: return null
 
             if (results.length() > 0) {
-                var bestIndex = 0
+                var bestMatch: JSONObject? = null
                 var minDiff = Long.MAX_VALUE
+                var highestWordScore = 0
+                val qWords = cleanedTitle.lowercase().split(Regex("""\s+""")).filter { it.length > 2 }
 
                 for (i in 0 until results.length()) {
                     val item = results.getJSONObject(i)
-                    val durationMs = item.optLong("trackTimeMillis", 0L)
-                    if (durationMs > 0 && targetDurationMs > 0) {
-                        val diff = abs(durationMs - targetDurationMs)
-                        if (diff < minDiff) {
-                            minDiff = diff
-                            bestIndex = i
+                    val resultTitle = item.optString("trackName", "").lowercase()
+                    
+                    val matchCount = qWords.count { resultTitle.contains(it) }
+                    
+                    if (qWords.isEmpty() || matchCount > 0) {
+                        val durationMs = item.optLong("trackTimeMillis", 0L)
+                        if (durationMs > 0 && targetDurationMs > 0) {
+                            val diff = abs(durationMs - targetDurationMs)
+                            if (matchCount > highestWordScore || (matchCount == highestWordScore && diff < minDiff)) {
+                                highestWordScore = matchCount
+                                minDiff = diff
+                                bestMatch = item
+                            }
                         }
                     }
                 }
 
-                val best = results.getJSONObject(bestIndex)
-                val fixedTitle = best.optString("trackName", "").trim()
-                val fixedArtist = best.optString("artistName", "").trim()
-                val fixedAlbum = best.optString("collectionName", "Single").trim()
-                val rawArt = best.optString("artworkUrl100", "")
-                val hdArt = rawArt.replace("100x100bb", "600x600bb").ifBlank { null }
+                if (bestMatch != null) {
+                    val fixedTitle = bestMatch.optString("trackName", "").trim()
+                    val fixedArtist = bestMatch.optString("artistName", "").trim()
+                    val fixedAlbum = bestMatch.optString("collectionName", "Single").trim()
+                    val rawArt = bestMatch.optString("artworkUrl100", "")
+                    val hdArt = rawArt.replace("100x100bb", "600x600bb").ifBlank { null }
 
-                if (fixedTitle.isNotBlank()) {
-                    FingerprintResult(
-                        title = fixedTitle,
-                        artist = fixedArtist.ifBlank { "Original Artist" },
-                        album = fixedAlbum.ifBlank { "Single" },
-                        albumArtUrl = hdArt,
-                        matchConfidence = 0.85f
-                    )
-                } else null
-            } else null
+                    if (fixedTitle.isNotBlank()) {
+                        return FingerprintResult(
+                            title = fixedTitle,
+                            artist = fixedArtist.ifBlank { "Original Artist" },
+                            album = fixedAlbum.ifBlank { "Single" },
+                            albumArtUrl = hdArt,
+                            matchConfidence = 0.85f
+                        )
+                    }
+                }
+            }
+            return null
         } catch (_: Exception) {
             null
         }

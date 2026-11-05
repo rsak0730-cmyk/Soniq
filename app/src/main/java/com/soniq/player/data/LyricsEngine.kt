@@ -54,6 +54,7 @@ object LyricsEngine {
 
         val queries = mutableListOf<String>()
 
+        // Priority 1: Force Hindi/Bollywood identity
         if (cleanTitle.isNotBlank()) {
             queries.add("$cleanTitle hindi")
             queries.add("$cleanTitle bollywood")
@@ -130,16 +131,19 @@ object LyricsEngine {
             val rawWords = current.text.split(Regex("""\s+""")).filter { it.isNotBlank() }
             if (rawWords.isNotEmpty()) {
                 val totalChars = rawWords.sumOf { it.length }.coerceAtLeast(1)
-                val timePerChar = lineDuration.toFloat() / totalChars
+                
+                // Natural Voice Timing algorithm (Avoids robotic stretching)
+                val estimatedTimePerChar = (lineDuration.toFloat() / totalChars) * 0.7f
+                val timePerChar = estimatedTimePerChar.coerceAtMost(250f)
                 
                 var currentMsTracker = current.timestampMs
                 
-                // FIXED: Explicitly define types to prevent compiler inference failures
                 val timedWords: List<TimedWord> = rawWords.map { wText: String ->
                     val wStart = currentMsTracker
                     val wDuration = (wText.length * timePerChar).toLong()
                     val wEnd = wStart + wDuration
-                    currentMsTracker = wEnd
+                    // Add 150ms breathing gap between words for natural rhythm
+                    currentMsTracker = wEnd + 150L 
                     TimedWord(wText, wStart, wEnd)
                 }
                 processed.add(current.copy(words = timedWords))
