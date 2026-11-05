@@ -65,9 +65,9 @@ import org.json.JSONObject
 import java.io.File
 import kotlin.math.PI
 import kotlin.math.cos
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
-// UI Color Palette
 val OLEDBlack = Color(0xFF040308)
 val NeonPurple = Color(0xFF9B6CFF)
 val DeepViolet = Color(0xFF6B2BEE)
@@ -77,7 +77,6 @@ val MutedLavender = Color(0xFFC7BCE0)
 val GlassPill = Color(0x351F143D)
 val GlassBorder = Color(0x5553F6FF)
 
-// Deep Ocean Lock-Screen Color Palette (#18)
 val DeepOceanAbyss = Color(0xFF030A16)
 val OceanNavyDeep = Color(0xFF081C36)
 val BioluminescentCyan = Color(0xFF38E1FF)
