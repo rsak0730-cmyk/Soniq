@@ -34,6 +34,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -90,6 +91,16 @@ private val OceanNavyDeep = Color(0xFF081C36)
 private val BioluminescentCyan = Color(0xFF38E1FF)
 private val OceanMistGlass = Color(0x280B2B4D)
 private val OceanGlassBorder = Color(0x4438E1FF)
+
+// Image 1 Liquid Glass Theme Elements
+private val LiquidGlassBackground = Color(0x1A00C3FF)
+private val LiquidGlassBorder = Color(0x4400C3FF)
+private val LiquidGlassGlow = Color(0x8800C3FF)
+
+// Image 2 Neumorphic Elements (Adapted for Dark Mode)
+private val NeumorphicBase = Color(0xFF12121A)
+private val NeumorphicHighlight = Color(0x22FFFFFF)
+private val NeumorphicShadow = Color(0x66000000)
 
 enum class MainTab(val label: String, val icon: ImageVector) {
     HOME("Home", Icons.Default.Home),
@@ -522,11 +533,12 @@ fun FloatingBottomNavBar(
     onSelect: (MainTab) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // Applied Image 1 Liquid Glass Theme to Bottom Nav
     Surface(
         modifier = modifier.fillMaxWidth().height(64.dp),
         shape = RoundedCornerShape(32.dp),
-        color = Color(0xEE100A24),
-        border = BorderStroke(1.2.dp, GlassBorder)
+        color = LiquidGlassBackground,
+        border = BorderStroke(1.2.dp, LiquidGlassBorder)
     ) {
         Row(
             modifier = Modifier.fillMaxSize().padding(horizontal = 6.dp),
@@ -554,12 +566,12 @@ fun FloatingBottomNavBar(
                         Icon(
                             tab.icon,
                             contentDescription = tab.label,
-                            tint = if (selected) activeColor else MutedLavender.copy(alpha = 0.5f),
+                            tint = if (selected) Color.White else MutedLavender.copy(alpha = 0.6f),
                             modifier = Modifier.size(22.dp)
                         )
                         Text(
                             tab.label,
-                            color = if (selected) activeColor else MutedLavender.copy(alpha = 0.5f),
+                            color = if (selected) Color.White else MutedLavender.copy(alpha = 0.6f),
                             fontSize = 9.sp,
                             maxLines = 1,
                             softWrap = false,
@@ -633,14 +645,16 @@ fun LiquidWaterWaveBackground(
     }
 }
 
+/**
+ * Image 2 Neumorphic Artwork Element.
+ * Perfectly rounded rectangular cutout, embossed shadows, completely flat (no gyro tilt).
+ */
 @Composable
 fun RoundedRectTimelineCenterpiece(
     song: Song,
     isPlaying: Boolean,
     primaryColor: Color,
     secondaryColor: Color,
-    gyroPitch: Float,
-    gyroRoll: Float,
     modifier: Modifier = Modifier
 ) {
     val amplitudes = RealtimeFftMonitor.amplitudes
@@ -649,57 +663,24 @@ fun RoundedRectTimelineCenterpiece(
     Box(
         modifier = modifier
             .aspectRatio(1f)
-            .graphicsLayer {
-                rotationX = (gyroPitch * 10f).coerceIn(-12f, 12f)
-                rotationY = (gyroRoll * 10f).coerceIn(-12f, 12f)
-                cameraDistance = 18f * density
-                shadowElevation = 24.dp.toPx()
-                shape = RoundedCornerShape(32.dp)
-                clip = false
-            },
+            .shadow(24.dp, RoundedCornerShape(32.dp), ambientColor = NeumorphicShadow, spotColor = NeumorphicShadow)
+            .background(NeumorphicBase, RoundedCornerShape(32.dp))
+            .border(1.5.dp, NeumorphicHighlight, RoundedCornerShape(32.dp)),
         contentAlignment = Alignment.Center
     ) {
-        Canvas(modifier = Modifier.fillMaxSize(1.06f)) {
-            drawRoundRect(
-                brush = Brush.radialGradient(
-                    colors = listOf(
-                        secondaryColor.copy(alpha = if (isPlaying) 0.32f else 0.16f),
-                        primaryColor.copy(alpha = if (isPlaying) 0.18f else 0.08f),
-                        Color.Transparent
-                    ),
-                    center = center,
-                    radius = size.minDimension / 1.7f
-                ),
-                size = size,
-                cornerRadius = CornerRadius(36.dp.toPx(), 36.dp.toPx())
-            )
-        }
-
         SongThumb(
             song = song,
             modifier = Modifier
                 .fillMaxSize(0.92f)
-                .clip(RoundedCornerShape(32.dp))
+                .clip(RoundedCornerShape(26.dp))
         )
 
         Canvas(modifier = Modifier.fillMaxSize(0.92f)) {
             val w = size.width
             val h = size.height
-            val corner = 32.dp.toPx()
+            val corner = 26.dp.toPx()
 
-            drawRoundRect(
-                brush = Brush.sweepGradient(
-                    listOf(
-                        secondaryColor.copy(alpha = 0.90f),
-                        primaryColor.copy(alpha = 0.90f),
-                        secondaryColor.copy(alpha = 0.90f)
-                    )
-                ),
-                size = size,
-                cornerRadius = CornerRadius(corner, corner),
-                style = Stroke(2.5.dp.toPx())
-            )
-
+            // Subtle Glass Scrim for the equalizer lines
             drawRoundRect(
                 brush = Brush.verticalGradient(
                     0.58f to Color.Transparent,
@@ -709,6 +690,7 @@ fun RoundedRectTimelineCenterpiece(
                 cornerRadius = CornerRadius(corner, corner)
             )
 
+            // Equalizer Bars
             val barWidth = 4.dp.toPx()
             val totalBarsWidth = numBars * barWidth
             val spacing = (w * 0.78f - totalBarsWidth) / (numBars - 1).coerceAtLeast(1)
@@ -1036,8 +1018,6 @@ fun DeepOceanLockScreenView(
     duration: Long,
     shuffle: Boolean,
     repeatMode: Int,
-    gyroPitch: Float,
-    gyroRoll: Float,
     onPlayPause: () -> Unit,
     onNext: () -> Unit,
     onPrevious: () -> Unit,
@@ -1062,15 +1042,13 @@ fun DeepOceanLockScreenView(
         Canvas(modifier = Modifier.fillMaxSize()) {
             val w = size.width
             val h = size.height
-
             drawRect(
                 brush = Brush.verticalGradient(
                     colors = listOf(DeepOceanAbyss, OceanNavyDeep, DeepOceanAbyss)
                 )
             )
-
-            val bloomX = w * (0.5f + 0.12f * sin(waveT1.toDouble()).toFloat()) + (gyroRoll * 30f)
-            val bloomY = h * (0.35f + 0.08f * cos(waveT1.toDouble()).toFloat()) + (gyroPitch * 30f)
+            val bloomX = w * (0.5f + 0.12f * sin(waveT1.toDouble()).toFloat())
+            val bloomY = h * (0.35f + 0.08f * cos(waveT1.toDouble()).toFloat())
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(
@@ -1126,8 +1104,6 @@ fun DeepOceanLockScreenView(
                 isPlaying = isPlaying,
                 primaryColor = OceanNavyDeep,
                 secondaryColor = BioluminescentCyan,
-                gyroPitch = gyroPitch,
-                gyroRoll = gyroRoll,
                 modifier = Modifier.size(240.dp)
             )
 
@@ -1294,7 +1270,6 @@ fun FullPlayer(
             )
             Spacer(Modifier.height(6.dp))
 
-            // Navigation Bar
             Row(
                 Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -1496,8 +1471,6 @@ fun FullPlayer(
                         isPlaying = isPlaying,
                         primaryColor = primaryAccent,
                         secondaryColor = secondaryAccent,
-                        gyroPitch = gyroPitch,
-                        gyroRoll = gyroRoll,
                         modifier = Modifier.size(220.dp)
                     )
                 }
@@ -1539,6 +1512,7 @@ fun FullPlayer(
 
             Spacer(Modifier.height(6.dp))
 
+            // Neumorphic Embossed Controls (Image 2 Theme Integration)
             Row(
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceEvenly,
@@ -1547,29 +1521,60 @@ fun FullPlayer(
                 BouncyIconButton(onClick = onShuffle) {
                     Icon(Icons.Default.Shuffle, null, tint = if (shuffle) secondaryAccent else MutedLavender)
                 }
-                BouncyIconButton(onClick = onPrevious) {
-                    Icon(Icons.Default.SkipPrevious, null, tint = Color.White, modifier = Modifier.size(36.dp))
-                }
-                BouncyButton(onClick = onPlayPause, modifier = Modifier.size(66.dp)) {
+
+                // Neumorphic Previous Button
+                BouncyButton(onClick = onPrevious, modifier = Modifier.size(46.dp)) {
                     Surface(
                         shape = CircleShape,
-                        color = primaryAccent,
-                        border = BorderStroke(2.5.dp, secondaryAccent),
-                        modifier = Modifier.fillMaxSize()
+                        color = NeumorphicBase,
+                        border = BorderStroke(1.5.dp, NeumorphicHighlight),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .shadow(8.dp, CircleShape, ambientColor = NeumorphicShadow, spotColor = NeumorphicShadow)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(Icons.Default.SkipPrevious, null, tint = Color.White, modifier = Modifier.size(24.dp))
+                        }
+                    }
+                }
+
+                // Neumorphic Play/Pause Button
+                BouncyButton(onClick = onPlayPause, modifier = Modifier.size(72.dp)) {
+                    Surface(
+                        shape = CircleShape,
+                        color = NeumorphicBase,
+                        border = BorderStroke(2.5.dp, NeumorphicHighlight),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .shadow(14.dp, CircleShape, ambientColor = NeumorphicShadow, spotColor = NeumorphicShadow)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
                                 if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                                 null,
-                                tint = Color.White,
-                                modifier = Modifier.size(36.dp)
+                                tint = secondaryAccent,
+                                modifier = Modifier.size(38.dp)
                             )
                         }
                     }
                 }
-                BouncyIconButton(onClick = onNext) {
-                    Icon(Icons.Default.SkipNext, null, tint = Color.White, modifier = Modifier.size(36.dp))
+
+                // Neumorphic Next Button
+                BouncyButton(onClick = onNext, modifier = Modifier.size(46.dp)) {
+                    Surface(
+                        shape = CircleShape,
+                        color = NeumorphicBase,
+                        border = BorderStroke(1.5.dp, NeumorphicHighlight),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .shadow(8.dp, CircleShape, ambientColor = NeumorphicShadow, spotColor = NeumorphicShadow)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(Icons.Default.SkipNext, null, tint = Color.White, modifier = Modifier.size(24.dp))
+                        }
+                    }
                 }
+
                 BouncyIconButton(onClick = onRepeat) {
                     Icon(
                         if (repeatMode == Player.REPEAT_MODE_ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
@@ -1919,7 +1924,7 @@ fun SoniqApp() {
                     }
                 }
 
-                // Search Bar
+                // Liquid Glass Search Bar (Image 1 Theme)
                 AnimatedVisibility(visible = currentTab == MainTab.HOME || currentTab == MainTab.LIBRARY) {
                     Column {
                         OutlinedTextField(
@@ -1954,13 +1959,13 @@ fun SoniqApp() {
                             singleLine = true,
                             shape = RoundedCornerShape(26.dp),
                             colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = dynamicSecondaryColor,
-                                unfocusedBorderColor = GlassBorder,
+                                focusedContainerColor = LiquidGlassBackground,
+                                unfocusedContainerColor = LiquidGlassBackground.copy(alpha = 0.05f),
+                                focusedBorderColor = LiquidGlassGlow,
+                                unfocusedBorderColor = LiquidGlassBorder,
                                 focusedTextColor = Color.White,
                                 unfocusedTextColor = Color.White,
-                                cursorColor = dynamicSecondaryColor,
-                                focusedContainerColor = Color(0x6618102C),
-                                unfocusedContainerColor = Color(0x44140D26)
+                                cursorColor = dynamicSecondaryColor
                             )
                         )
 

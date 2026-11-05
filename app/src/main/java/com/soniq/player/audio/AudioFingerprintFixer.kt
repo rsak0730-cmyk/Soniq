@@ -7,7 +7,6 @@ import com.soniq.player.data.Song
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
-import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
@@ -63,13 +62,11 @@ object AudioFingerprintFixer {
     }
 
     suspend fun autoFixSong(context: Context, song: Song): FingerprintResult = withContext(Dispatchers.IO) {
-        // 1. Embedded Metadata Verification
         val embeddedResult = extractEmbeddedMetadata(context, song)
         if (embeddedResult != null && embeddedResult.matchConfidence >= 0.85f) {
             return@withContext embeddedResult
         }
 
-        // 2. Build Multi-tier Search Queries
         val cleanedTitle = cleanLocalTitle(song.title)
         val queries = mutableListOf<String>()
 
@@ -84,29 +81,26 @@ object AudioFingerprintFixer {
             if (primary.length >= 3) queries.add(primary)
         }
 
-        if (cleanedTitle.isNotBlank()) queries.add(cleanedTitle)
+        // Force Hindi/Bollywood match queries
+        if (cleanedTitle.isNotBlank()) {
+            queries.add("$cleanedTitle hindi")
+            queries.add(cleanedTitle)
+        }
 
-        // Add 2-word & 3-word prefixes (e.g., "Andaaz e Karam", "Bol Kaffara Kya", "Dil Ka Jo Haal")
         val words = cleanedTitle.split(" ").filter { it.isNotBlank() }
         if (words.size >= 3) {
             queries.add(words.take(3).joinToString(" "))
         }
-        if (words.size >= 2) {
-            queries.add(words.take(2).joinToString(" "))
-        }
 
-        // 3. Query Catalogs
         for (q in queries.distinct()) {
             if (q.length < 3) continue
 
-            // JioSaavn Gateway
             val saavnMatch = queryJioSaavn(q, song.durationMs)
             if (saavnMatch != null && saavnMatch.matchConfidence >= 0.60f) {
                 val localArt = saavnMatch.albumArtUrl?.let { saveArtworkLocally(context, song.id, it) }
                 return@withContext saavnMatch.copy(albumArtUrl = localArt ?: saavnMatch.albumArtUrl)
             }
 
-            // Apple Music / iTunes Store
             val itunesMatch = queryItunes(q, song.durationMs)
             if (itunesMatch != null && itunesMatch.matchConfidence >= 0.60f) {
                 val localArt = itunesMatch.albumArtUrl?.let { saveArtworkLocally(context, song.id, it) }
@@ -114,7 +108,6 @@ object AudioFingerprintFixer {
             }
         }
 
-        // Cleaned fallback if title had obvious underscores and spam
         if (cleanedTitle.length >= 3) {
             return@withContext FingerprintResult(
                 title = cleanedTitle,
@@ -125,13 +118,7 @@ object AudioFingerprintFixer {
             )
         }
 
-        FingerprintResult(
-            title = song.title,
-            artist = song.artist,
-            album = song.album,
-            albumArtUrl = song.albumArtUri,
-            matchConfidence = 0.0f
-        )
+        FingerprintResult(song.title, song.artist, song.album, song.albumArtUri, 0.0f)
     }
 
     private fun extractEmbeddedMetadata(context: Context, song: Song): FingerprintResult? {

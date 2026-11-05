@@ -54,23 +54,17 @@ object LyricsEngine {
 
         val queries = mutableListOf<String>()
 
-        if (cleanTitle.contains(" X ", ignoreCase = true)) {
-            val parts = cleanTitle.split(Regex("""(?i)\s+x\s+"""))
-            val first = cleanForLyricsSearch(parts.firstOrNull().orEmpty())
-            if (first.length >= 3) queries.add(first)
-            val second = cleanForLyricsSearch(parts.getOrNull(1).orEmpty())
-            if (second.length >= 3) queries.add(second)
+        // 1. Force priority for Hindi/Hinglish by appending language tags
+        if (cleanTitle.isNotBlank()) {
+            queries.add("$cleanTitle hindi")
+            queries.add("$cleanTitle bollywood")
         }
-
+        
         if (cleanArtist.isNotBlank() && cleanTitle.isNotBlank()) {
             queries.add("$cleanTitle $cleanArtist")
         }
         if (cleanTitle.isNotBlank()) {
             queries.add(cleanTitle)
-            if (cleanTitle.contains("-")) {
-                val mainPart = cleanTitle.split("-").first().trim()
-                if (mainPart.length >= 3) queries.add(mainPart)
-            }
         }
 
         for (query in queries.distinct()) {
@@ -88,7 +82,7 @@ object LyricsEngine {
             val conn = (url.openConnection() as HttpURLConnection).apply {
                 connectTimeout = 4000
                 readTimeout = 4000
-                setRequestProperty("User-Agent", "SONIQ-Player/0.9.8")
+                setRequestProperty("User-Agent", "SONIQ-Player/1.0")
             }
             if (conn.responseCode != 200) return emptyList()
 
@@ -105,6 +99,7 @@ object LyricsEngine {
                 }
             }
 
+            // Fallback to plain lyrics if synced isn't available
             for (i in 0 until array.length()) {
                 val obj = array.getJSONObject(i)
                 val plain = obj.optString("plainLyrics", "")
@@ -136,10 +131,16 @@ object LyricsEngine {
 
             val rawWords = current.text.split(Regex("""\s+""")).filter { it.isNotBlank() }
             if (rawWords.isNotEmpty()) {
-                val wordDuration = lineDuration / rawWords.size
-                val timedWords = rawWords.mapIndexed { wIdx, wText ->
-                    val wStart = current.timestampMs + (wIdx * wordDuration)
-                    val wEnd = wStart + wordDuration
+                // FIXED RHYTHM: Weight timing based on character length so it flows naturally with the voice
+                val totalChars = rawWords.sumOf { it.length }.coerceAtLeast(1)
+                val timePerChar = lineDuration.toFloat() / totalChars
+                
+                var currentMsTracker = current.timestampMs
+                val timedWords = rawWords.map { wText ->
+                    val wStart = currentMsTracker
+                    val wDuration = (wText.length * timePerChar).toLong()
+                    val wEnd = wStart + wDuration
+                    currentMsTracker = wEnd
                     TimedWord(wText, wStart, wEnd)
                 }
                 processed.add(current.copy(words = timedWords))
