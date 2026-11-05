@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- Internet & Network Permissions (CRITICAL for Auto-Fixer & Lyrics) -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
     <!-- Audio & Storage Permissions -->
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
@@ -28,7 +32,9 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:label="SONIQ"
         android:supportsRtl="true"
-        android:theme="@style/Theme.Soniq">
+        android:theme="@style/Theme.Soniq"
+        android:usesCleartextTraffic="true"> 
+        <!-- usesCleartextTraffic="true" allows the app to download standard HTTP album art -->
 
         <activity
             android:name=".MainActivity"
