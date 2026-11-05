@@ -530,7 +530,10 @@ fun FloatingBottomNavBar(
                 ) {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.scale(animScale)
+                        modifier = Modifier.graphicsLayer {
+                            scaleX = animScale
+                            scaleY = animScale
+                        }
                     ) {
                         Icon(
                             tab.icon,
@@ -2138,7 +2141,7 @@ fun SettingsScreen(
                 modifier = Modifier.weight(1f)
             ) {
                 Icon(Icons.Default.AutoFixHigh, null, tint = ElectricCyan, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(4.dp))
+                Spacer(Modifier.width(6.dp))
                 Text("Auto-Fix All", color = Color.White, fontSize = 12.sp, maxLines = 1)
             }
         }
@@ -2161,3 +2164,4 @@ fun SettingsScreen(
         Text("SONIQ v0.9.8 • Studio Suite", color = MutedLavender.copy(alpha = 0.5f), fontSize = 11.sp)
     }
 }
+.
