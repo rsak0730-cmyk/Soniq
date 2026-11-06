@@ -7,9 +7,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.ui.graphics.Color
 import com.soniq.player.ui.SoniqApp
+import com.soniq.player.ui.theme.soniqLightColorScheme
 
 class MainActivity : ComponentActivity() {
     private val permissionLauncher =
@@ -35,12 +34,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             MaterialTheme(
-                colorScheme = darkColorScheme(
-                    primary = Color(0xFFB68CFF),
-                    secondary = Color(0xFF67E8F9),
-                    background = Color(0xFF090711),
-                    surface = Color(0xFF171222)
-                )
+                colorScheme = soniqLightColorScheme()
             ) {
                 SoniqApp()
             }
