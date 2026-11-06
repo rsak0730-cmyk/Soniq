@@ -27,7 +27,7 @@ object AudioFingerprintFixer {
 
     private val SPAM_PATTERNS = listOf(
         Regex("""(?i)\[.*?\]"""),
-        Regex("""(?i)\(.*?\b(official\vert{}video\vert{}audio\vert{}lyric\vert{}lyrics\vert{}hd\vert{}4k\vert{}download\vert{}mp3\vert{}remix\vert{}mashup\vert{}slowed\vert{}reverb\vert{}full\vert{}song\vert{}ringtone)\b.*?\)"""),
+        Regex("""(?i)\(.*?\b(official|video|audio|lyric|lyrics|hd|4k|download|mp3|remix|mashup|slowed|reverb|full|song|ringtone)\b.*?\)"""),
         Regex("""(?i)__?(official|audio|video|lyric|lyrics|hd|4k|download|mp3|remix|full|song|ringtone).*"""),
         Regex("""(?i)_320kbps|_128kbps|\.mp3|\.m4a|\.flac|\.wav|\.aac"""),
         Regex("""^[0-9]+[\s._-]+"""),
@@ -81,28 +81,29 @@ object AudioFingerprintFixer {
             if (primary.length >= 3) queries.add(primary)
         }
 
-        // Add targeted Hindi/Bollywood queries for better regional accuracy
+        // Targeted queries
         if (cleanedTitle.isNotBlank()) {
-            queries.add("$cleanedTitle hindi")
             queries.add(cleanedTitle)
+            queries.add("$cleanedTitle hindi")
         }
 
         for (q in queries.distinct()) {
             if (q.length < 3) continue
 
             val saavnMatch = queryJioSaavn(q, song.durationMs)
-            if (saavnMatch != null && saavnMatch.matchConfidence >= 0.55f) {
+            if (saavnMatch != null && saavnMatch.matchConfidence >= 0.65f) { // Strict threshold
                 val localArt = saavnMatch.albumArtUrl?.let { saveArtworkLocally(context, song.id, it) }
                 return@withContext saavnMatch.copy(albumArtUrl = localArt ?: saavnMatch.albumArtUrl)
             }
 
             val itunesMatch = queryItunes(q, song.durationMs)
-            if (itunesMatch != null && itunesMatch.matchConfidence >= 0.55f) {
+            if (itunesMatch != null && itunesMatch.matchConfidence >= 0.65f) {
                 val localArt = itunesMatch.albumArtUrl?.let { saveArtworkLocally(context, song.id, it) }
                 return@withContext itunesMatch.copy(albumArtUrl = localArt ?: itunesMatch.albumArtUrl)
             }
         }
 
+        // Cleaned fallback if no high-confidence match found
         if (cleanedTitle.length >= 3) {
             return@withContext FingerprintResult(
                 title = cleanedTitle,
@@ -135,7 +136,7 @@ object AudioFingerprintFixer {
                     artist = metaArtist!!,
                     album = metaAlbum?.ifBlank { "Single" } ?: "Single",
                     albumArtUrl = song.albumArtUri,
-                    matchConfidence = 0.90f
+                    matchConfidence = 0.95f
                 )
             } else null
         } catch (_: Exception) {
@@ -145,19 +146,34 @@ object AudioFingerprintFixer {
         }
     }
 
-    private fun getMatchScore(queryWords: List<String>, targetString: String, durationDiffSec: Long): Float {
+    /** Strict Scoring Algorithm: Must match keywords AND match duration tightly */
+    private fun getMatchScore(query: String, targetString: String, durationDiffSec: Long): Float {
         val target = targetString.lowercase()
-        var matchCount = 0
-        for (word in queryWords) {
-            if (target.contains(word)) matchCount++
+        val q = query.lowercase().replace("hindi", "").replace("bollywood", "").trim()
+        
+        var confidence = 0f
+        
+        // Exact substring match of the title gives a huge base score
+        if (target.contains(q) || q.contains(target)) {
+            confidence += 0.5f
+        } else {
+            // Word by word fallback
+            val qWords = q.split(Regex("""\s+""")).filter { it.length > 2 }
+            if (qWords.isNotEmpty()) {
+                val matchCount = qWords.count { target.contains(it) }
+                confidence += (matchCount.toFloat() / qWords.size) * 0.4f
+            }
         }
         
-        var confidence = if (queryWords.isNotEmpty()) (matchCount.toFloat() / queryWords.size) else 0f
-        
-        // Duration tie-breaker (boost if duration is within 15 seconds, but don't heavily penalize long mixes)
-        if (durationDiffSec < 15) {
-            confidence += 0.20f
+        // Duration tie-breaker (Extremely important to prevent wrong song identities)
+        if (durationDiffSec <= 4) {
+            confidence += 0.45f // Perfect match
+        } else if (durationDiffSec <= 15) {
+            confidence += 0.15f // Close match
+        } else if (durationDiffSec > 30) {
+            confidence -= 0.50f // Heavily penalize wrong version (e.g. extended mix vs radio)
         }
+        
         return confidence.coerceIn(0f, 1f)
     }
 
@@ -167,8 +183,6 @@ object AudioFingerprintFixer {
             "https://jiosaavn-api-privatecvc2.vercel.app/search/songs"
         )
         
-        val qWords = query.lowercase().replace("hindi", "").replace("bollywood", "").split(Regex("""\s+""")).filter { it.length > 2 }
-
         for (baseUrl in endpoints) {
             try {
                 val encoded = URLEncoder.encode(query, "UTF-8")
@@ -197,14 +211,14 @@ object AudioFingerprintFixer {
                         val durSec = item.optLong("duration", 0L)
                         val diffSec = abs((durSec * 1000L) - targetDurationMs) / 1000L
 
-                        val score = getMatchScore(qWords, resultTitle, diffSec)
+                        val score = getMatchScore(query, resultTitle, diffSec)
                         if (score > highestScore) {
                             highestScore = score
                             bestMatch = item
                         }
                     }
 
-                    if (bestMatch != null && highestScore >= 0.40f) {
+                    if (bestMatch != null && highestScore >= 0.65f) {
                         val title = bestMatch.optString("name", "").replace("&quot;", "\"").replace("&#039;", "'").replace("&amp;", "&").trim()
                         var artist = ""
 
@@ -260,8 +274,6 @@ object AudioFingerprintFixer {
             val text = conn.inputStream.bufferedReader().use { it.readText() }
             val root = JSONObject(text)
             val results = root.optJSONArray("results") ?: return null
-            
-            val qWords = cleanedTitle.lowercase().replace("hindi", "").split(Regex("""\s+""")).filter { it.length > 2 }
 
             if (results.length() > 0) {
                 var bestMatch: JSONObject? = null
@@ -273,14 +285,14 @@ object AudioFingerprintFixer {
                     val durationMs = item.optLong("trackTimeMillis", 0L)
                     val diffSec = abs(durationMs - targetDurationMs) / 1000L
 
-                    val score = getMatchScore(qWords, resultTitle, diffSec)
+                    val score = getMatchScore(cleanedTitle, resultTitle, diffSec)
                     if (score > highestScore) {
                         highestScore = score
                         bestMatch = item
                     }
                 }
 
-                if (bestMatch != null && highestScore >= 0.40f) {
+                if (bestMatch != null && highestScore >= 0.65f) {
                     val fixedTitle = bestMatch.optString("trackName", "").trim()
                     val fixedArtist = bestMatch.optString("artistName", "").trim()
                     val fixedAlbum = bestMatch.optString("collectionName", "Single").trim()
