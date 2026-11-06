@@ -66,7 +66,6 @@ import com.soniq.player.audio.AudioDeviceMonitor
 import com.soniq.player.audio.AudioEffectsBridge
 import com.soniq.player.audio.AudioFingerprintFixer
 import com.soniq.player.audio.AudioOutput
-import com.soniq.player.audio.GyroscopeParallaxEngine
 import com.soniq.player.audio.RealtimeFftMonitor
 import com.soniq.player.data.*
 import com.soniq.player.playback.PlaybackService
@@ -1039,11 +1038,13 @@ fun DeepOceanLockScreenView(
         Canvas(modifier = Modifier.fillMaxSize()) {
             val w = size.width
             val h = size.height
+
             drawRect(
                 brush = Brush.verticalGradient(
                     colors = listOf(DeepOceanAbyss, OceanNavyDeep, DeepOceanAbyss)
                 )
             )
+
             val bloomX = w * (0.5f + 0.12f * sin(waveT1.toDouble()).toFloat())
             val bloomY = h * (0.35f + 0.08f * cos(waveT1.toDouble()).toFloat())
             drawCircle(
@@ -1638,6 +1639,10 @@ fun SoniqApp() {
     val listState = rememberLazyListState()
     var selectedFilterKey by remember { mutableStateOf<String?>(null) }
     var playerOffsetY by remember { mutableFloatStateOf(0f) }
+
+    var currentSpeedMode by remember { mutableStateOf("Normal") }
+    var slowedSpeedFactor by remember { mutableFloatStateOf(0.85f) }
+    var reverbStrengthFactor by remember { mutableFloatStateOf(0.70f) }
 
     BackHandler(enabled = showDeepOceanLockScreen || showPlayer || selectedFilterKey != null || currentTab != MainTab.HOME) {
         when {
